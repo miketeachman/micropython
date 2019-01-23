@@ -347,6 +347,7 @@ SRC_C = \
 	modesp32.c \
 	espneopixel.c \
 	machine_hw_spi.c \
+	machine_i2s.c \
 	machine_wdt.c \
 	mpthreadport.c \
 	machine_rtc.c \
