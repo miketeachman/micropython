@@ -352,6 +352,7 @@ SRC_C = \
 	mpthreadport.c \
 	machine_rtc.c \
 	machine_sdcard.c \
+	bitcrusher.c \
 	$(wildcard $(BOARD_DIR)/*.c) \
 	$(SRC_MOD)
 
