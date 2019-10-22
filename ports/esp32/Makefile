@@ -32,6 +32,7 @@ MICROPY_SSL_AXTLS = 0
 MICROPY_PY_BTREE = 1
 MICROPY_VFS_FAT = 1
 MICROPY_VFS_LFS2 = 1
+MICROPY_PY_LVGL = 1
 
 FROZEN_MANIFEST ?= boards/manifest.py
 
@@ -369,6 +370,43 @@ LIB_SRC_C = $(addprefix lib/,\
 	utils/interrupt_char.c \
 	utils/sys_stdio_mphal.c \
 	)
+
+ifeq ($(MICROPY_FATFS), 1)
+LIB_SRC_C += \
+	lib/oofatfs/ff.c \
+	lib/oofatfs/ffunicode.c
+endif
+
+################################################################################
+# start LittlevGL support
+ifeq ($(MICROPY_PY_LVGL), 1)
+LVGL_DIR = $(TOP)/lib/lv_binding_micropython
+include $(LVGL_DIR)/lvgl/lvgl.mk
+LVGL_DIR_2 = $(LVGL_DIR)/lvgl
+LVGL_GENERIC_DRV_DIR = $(LVGL_DIR)/driver/generic
+INC += -I$(LVGL_DIR)
+ALL_LVGL_SRC = $(shell find $(LVGL_DIR_2) -type f) $(LVGL_DIR)/lv_conf.h
+LVGL_PP = $(BUILD)/lvgl/lvgl.pp.c
+LVGL_MPY = $(BUILD)/lvgl/lv_mpy.c
+LVGL_MPY_METADATA = $(BUILD)/lvgl/lv_mpy.json
+QSTR_GLOBAL_DEPENDENCIES += $(LVGL_MPY)
+CFLAGS_MOD += $(LV_CFLAGS) 
+
+$(LVGL_MPY): $(ALL_LVGL_SRC) $(LVGL_DIR)/gen/gen_mpy.py 
+	$(ECHO) "LVGL-GEN $@"
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(CPP) $(LV_CFLAGS) -I $(LVGL_DIR)/pycparser/utils/fake_libc_include $(INC) $(LVGL_DIR_2)/lvgl.h > $(LVGL_PP)
+	$(Q)$(PYTHON) $(LVGL_DIR)/gen/gen_mpy.py -M lvgl -MP lv -MD $(LVGL_MPY_METADATA) -E $(LVGL_PP) $(LVGL_DIR_2)/lvgl.h > $@
+	
+LIB_SRC_C += \
+	$(LVGL_MPY) \
+	lib/lv_binding_micropython/driver/esp32/modlvesp32.c \
+	lib/lv_binding_micropython/driver/esp32/modILI9341.c \
+	lib/lv_binding_micropython/driver/esp32/modxpt2046.c \
+	lib/lv_binding_micropython/driver/esp32/modrtch.c \
+	$(CSRCS)
+endif
+# end LittlevGL support
 
 DRIVERS_SRC_C = $(addprefix drivers/,\
 	bus/softspi.c \

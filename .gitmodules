@@ -30,3 +30,6 @@
 [submodule "lib/mynewt-nimble"]
 	path = lib/mynewt-nimble
 	url = https://github.com/apache/mynewt-nimble.git
+[submodule "lib/lv_binding_micropython"]
+	path = lib/lv_binding_micropython
+	url = https://github.com/miketeachman/lv_binding_micropython

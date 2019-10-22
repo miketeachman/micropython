@@ -43,3 +43,7 @@ user.props
 # Generated rst files
 ######################
 genrst/
+
+# little vgl
+######################
+lib/lv_binding_micropython/
