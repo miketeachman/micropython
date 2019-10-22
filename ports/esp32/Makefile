@@ -414,7 +414,6 @@ LIB_SRC_C += \
 endif
 # end LittlevGL support
 
-
 DRIVERS_SRC_C = $(addprefix drivers/,\
 	bus/softspi.c \
 	dht/dht.c \
