@@ -403,13 +403,12 @@ LIB_SRC_C += \
 	$(LVGL_MPY) \
 	lib/lv_binding_micropython/driver/esp32/modlvesp32.c \
 	lib/lv_binding_micropython/driver/esp32/modILI9341.c \
-	lib/lv_binding_micropython/driver/esp32/modxpt2046.c \
-	lib/lv_binding_micropython/driver/esp32/modrtch.c \
 	lib/lv_binding_micropython/myfonts/lv_font_roboto_80.c \
 	lib/lv_binding_micropython/myfonts/lv_font_roboto_120.c \
 	$(CSRCS)
 endif
 # end LittlevGL support
+
 
 DRIVERS_SRC_C = $(addprefix drivers/,\
 	bus/softspi.c \
