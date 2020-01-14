@@ -407,8 +407,8 @@ LIB_SRC_C += \
 	lib/lv_binding_micropython/myfonts/lv_font_roboto_mono_50.c \
 	lib/lv_binding_micropython/myfonts/lv_font_roboto_mono_60.c \
 	lib/lv_binding_micropython/myfonts/lv_font_roboto_mono_70.c \
-	lib/lv_binding_micropython/myfonts/lv_font_roboto_mono_80.c \
-	lib/lv_binding_micropython/myfonts/lv_font_roboto_mono_100.c \
+	lib/lv_binding_micropython/myfonts/lv_font_seven_segment_80.c \
+	lib/lv_binding_micropython/myfonts/lv_font_seven_segment_100.c \
 	lib/lv_binding_micropython/myfonts/lv_font_roboto_120.c \
 	$(CSRCS)
 endif
