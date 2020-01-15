@@ -59,10 +59,22 @@
 
 typedef enum {
     MP_PWRON_RESET = 1,
-    MP_HARD_RESET,
-    MP_WDT_RESET,
-    MP_DEEPSLEEP_RESET,
-    MP_SOFT_RESET
+    MP_HARD_RESET, // 2
+    MP_WDT_RESET, // 3
+    MP_DEEPSLEEP_RESET, // 4
+    MP_SOFT_RESET, // 5
+
+    MP_ESP32_SW_CPU_RESET, // 6
+    MP_ESP32_TG0WDT_SYS_RESET, // 7
+    MP_ESP32_TG1WDT_SYS_RESET, // 8
+    MP_ESP32_RTCWDT_SYS_RESET, // 9
+    MP_ESP32_RTCWDT_BROWN_OUT_RESET, // 10
+    MP_ESP32_RTCWDT_CPU_RESET, // 11
+    MP_ESP32_RTCWDT_RTC_RESET, // 12
+    MP_ESP32_TGWDT_CPU_RESET, // 13
+    MP_ESP32_NO_MEAN, // 14
+    MP_ESP32_SDIO_RESET, // 15
+    MP_ESP32_INTRUSION_RESET, // 16
 } reset_reason_t;
 
 STATIC mp_obj_t machine_freq(size_t n_args, const mp_obj_t *args) {
@@ -151,31 +163,50 @@ STATIC mp_obj_t machine_reset_cause(size_t n_args, const mp_obj_t *pos_args, mp_
             return MP_OBJ_NEW_SMALL_INT(MP_PWRON_RESET);
             break;
         case SW_RESET:
-        case SW_CPU_RESET:
             return MP_OBJ_NEW_SMALL_INT(MP_SOFT_RESET);
             break;
+        case SW_CPU_RESET:
+            return MP_OBJ_NEW_SMALL_INT(MP_ESP32_SW_CPU_RESET);
+            break;
         case OWDT_RESET:
+            return MP_OBJ_NEW_SMALL_INT(MP_WDT_RESET);
+            break;
         case TG0WDT_SYS_RESET:
+            return MP_OBJ_NEW_SMALL_INT(MP_ESP32_TG0WDT_SYS_RESET);
+            break;
         case TG1WDT_SYS_RESET:
+            return MP_OBJ_NEW_SMALL_INT(MP_ESP32_TG1WDT_SYS_RESET);
+            break;
         case RTCWDT_SYS_RESET:
+            return MP_OBJ_NEW_SMALL_INT(MP_ESP32_RTCWDT_SYS_RESET);
+            break;
         case RTCWDT_BROWN_OUT_RESET:
+            return MP_OBJ_NEW_SMALL_INT(MP_ESP32_RTCWDT_BROWN_OUT_RESET);
+            break;
         case RTCWDT_CPU_RESET:
+            return MP_OBJ_NEW_SMALL_INT(MP_ESP32_RTCWDT_CPU_RESET);
+            break;
         case RTCWDT_RTC_RESET:
+            return MP_OBJ_NEW_SMALL_INT(MP_ESP32_RTCWDT_RTC_RESET);
+            break;
         case TGWDT_CPU_RESET:
             return MP_OBJ_NEW_SMALL_INT(MP_WDT_RESET);
             break;
-
         case DEEPSLEEP_RESET:
             return MP_OBJ_NEW_SMALL_INT(MP_DEEPSLEEP_RESET);
             break;
-
         case EXT_CPU_RESET:
             return MP_OBJ_NEW_SMALL_INT(MP_HARD_RESET);
             break;
-
         case NO_MEAN:
+            return MP_OBJ_NEW_SMALL_INT(MP_ESP32_NO_MEAN);
+            break;
         case SDIO_RESET:
+            return MP_OBJ_NEW_SMALL_INT(MP_ESP32_SDIO_RESET);
+            break;
         case INTRUSION_RESET:
+            return MP_OBJ_NEW_SMALL_INT(MP_ESP32_INTRUSION_RESET);
+            break;
         default:
             return MP_OBJ_NEW_SMALL_INT(0);
             break;
@@ -275,6 +306,18 @@ STATIC const mp_rom_map_elem_t machine_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_WDT_RESET), MP_ROM_INT(MP_WDT_RESET) },
     { MP_ROM_QSTR(MP_QSTR_DEEPSLEEP_RESET), MP_ROM_INT(MP_DEEPSLEEP_RESET) },
     { MP_ROM_QSTR(MP_QSTR_SOFT_RESET), MP_ROM_INT(MP_SOFT_RESET) },
+
+    { MP_ROM_QSTR(MP_QSTR_ESP32_SW_CPU_RESET), MP_ROM_INT(MP_ESP32_SW_CPU_RESET) },
+    { MP_ROM_QSTR(MP_QSTR_ESP32_TG0WDT_SYS_RESET), MP_ROM_INT(MP_ESP32_TG0WDT_SYS_RESET) },
+    { MP_ROM_QSTR(MP_QSTR_ESP32_TG1WDT_SYS_RESET), MP_ROM_INT(MP_ESP32_TG1WDT_SYS_RESET) },
+    { MP_ROM_QSTR(MP_QSTR_ESP32_RTCWDT_SYS_RESET), MP_ROM_INT(MP_ESP32_RTCWDT_SYS_RESET) },
+    { MP_ROM_QSTR(MP_QSTR_ESP32_RTCWDT_BROWN_OUT_RESET), MP_ROM_INT(MP_ESP32_RTCWDT_BROWN_OUT_RESET) },
+    { MP_ROM_QSTR(MP_QSTR_ESP32_RTCWDT_CPU_RESET), MP_ROM_INT(MP_ESP32_RTCWDT_CPU_RESET) },
+    { MP_ROM_QSTR(MP_QSTR_ESP32_RTCWDT_RTC_RESET), MP_ROM_INT(MP_ESP32_RTCWDT_RTC_RESET) },
+    { MP_ROM_QSTR(MP_QSTR_ESP32_TGWDT_CPU_RESET), MP_ROM_INT(MP_ESP32_TGWDT_CPU_RESET) },
+    { MP_ROM_QSTR(MP_QSTR_ESP32_NO_MEAN), MP_ROM_INT(MP_ESP32_NO_MEAN) },
+    { MP_ROM_QSTR(MP_QSTR_ESP32_SDIO_RESET), MP_ROM_INT(MP_ESP32_SDIO_RESET) },
+    { MP_ROM_QSTR(MP_QSTR_ESP32_INTRUSION_RESET), MP_ROM_INT(MP_ESP32_INTRUSION_RESET) },
 
     // Wake reasons
     { MP_ROM_QSTR(MP_QSTR_wake_reason), MP_ROM_PTR(&machine_wake_reason_obj) },
