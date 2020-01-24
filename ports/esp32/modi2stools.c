@@ -56,6 +56,27 @@
  *              i2stools.copy(bufin=raw_samples, bufout=copied_samples, channel=i2stools.LEFT, format=i2stools.B16)
  *              ... do something with copied_samples ...
  *              
+ *      shift()
+ *
+ *          Performs an arithmetic shift of each audio sample in a buffer
+ *          - a single bit shift changes the gain by 6dB.  e.g.  1-bit left shift increases gain by 6dB
+ *          - a negative shift value is a right shift.  e.g. shift=-2 shifts right by 2-bits
+ *
+ *          Performance Tests:  256 stereo frames (2048 bytes) processed in TODO.  ESP32 @ 240MHz.
+ *                              Equivalent MicroPython code runs in approximately TODO
+ *                              Using this compiled C function is about TODO faster
+ *
+ *          Typical use cases.
+ *              1. volume control.  Left shift = increase volume.  Right shift = reduce volume
+ *
+ *          MicroPython Example:  right shift 16-bit audio samples by 1-bit
+ *              import i2stools
+ *              SAMPLE_BUFFER_SIZE = 2048
+ *              raw_samples = bytearray(SAMPLE_BUFFER_SIZE)  # bytearray holding 16-bit audio data
+ *              shifted_samples = bytearray(SAMPLE_BUFFER_SIZE) # bytearray to hold 16-bit audio data
+ *              i2stools.shift(bufin=raw_samples, bufout=shifted_samples, shift=-1, format=i2stools.B16)
+ *              ... do something with shifted_samples ...
+ *
  *          Caution:  arguments have no validity checks
  */
 
@@ -95,8 +116,8 @@ STATIC mp_obj_t i2stools_copy(size_t n_args, const mp_obj_t *pos_args, mp_map_t 
 
     mp_buffer_info_t bufinfo_out;
     mp_get_buffer_raise(args[ARG_bufout].u_obj, &bufinfo_out, MP_BUFFER_WRITE);
+    int16_t *buf_out_16 = bufinfo_out.buf;
     int32_t *buf_out_32 = bufinfo_out.buf;
-    int16_t *buf_out_16 = bufinfo_out.buf; 
     
     channel_t channel = args[ARG_channel].u_int;
     format_t format = args[ARG_format].u_int;
@@ -126,9 +147,70 @@ STATIC mp_obj_t i2stools_copy(size_t n_args, const mp_obj_t *pos_args, mp_map_t 
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(i2stools_copy_obj, 0, i2stools_copy);
 
+STATIC mp_obj_t i2stools_shift(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_bufin, ARG_bufout, ARG_shift, ARG_format};
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_bufin,    MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_bufout,   MP_ARG_REQUIRED | MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_shift ,                     MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_format,                     MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = FORMAT_16_BIT} },
+    };
+
+    // parse args
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    mp_buffer_info_t bufinfo_in;
+    mp_get_buffer_raise(args[ARG_bufin].u_obj, &bufinfo_in, MP_BUFFER_READ);
+    int16_t *buf_in_16 = bufinfo_in.buf;
+    int32_t *buf_in_32 = bufinfo_in.buf;
+
+    mp_buffer_info_t bufinfo_out;
+    mp_get_buffer_raise(args[ARG_bufout].u_obj, &bufinfo_out, MP_BUFFER_WRITE);
+    int16_t *buf_out_16 = bufinfo_out.buf;
+    int32_t *buf_out_32 = bufinfo_out.buf;
+
+    int8_t shift = args[ARG_shift].u_int;
+    format_t format = args[ARG_format].u_int;
+
+    uint32_t num_audio_samples;
+    switch (format) {
+        case FORMAT_16_BIT:
+            num_audio_samples = bufinfo_in.len / 2;
+            break;
+        case FORMAT_32_BIT:
+        default:
+            num_audio_samples = bufinfo_in.len / 4;
+            break;
+    }
+
+    for (uint32_t i = 0; i < num_audio_samples; i++) {
+        switch (format) {
+            case FORMAT_16_BIT:
+                if (shift >= 0) {
+                    buf_out_16[i] = buf_in_16[i] << shift;
+                } else {
+                    buf_out_16[i] = buf_in_16[i] >> abs(shift);
+                }
+                break;
+            case FORMAT_32_BIT:
+            default:
+                if (shift >= 0) {
+                    buf_out_32[i] = buf_in_32[i] << shift;
+                } else {
+                    buf_out_32[i] = buf_in_32[i] >> abs(shift);
+                }
+                break;
+        }
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(i2stools_shift_obj, 0, i2stools_shift);
+
 STATIC const mp_rom_map_elem_t i2stools_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__),    MP_ROM_QSTR(MP_QSTR_i2stools) },
     { MP_ROM_QSTR(MP_QSTR_copy),        MP_ROM_PTR(&i2stools_copy_obj) },
+    { MP_ROM_QSTR(MP_QSTR_shift),       MP_ROM_PTR(&i2stools_shift_obj) },
     { MP_ROM_QSTR(MP_QSTR_LEFT),        MP_ROM_INT(CHANNEL_LEFT) },
     { MP_ROM_QSTR(MP_QSTR_RIGHT),       MP_ROM_INT(CHANNEL_RIGHT) },
     { MP_ROM_QSTR(MP_QSTR_B16),         MP_ROM_INT(FORMAT_16_BIT) },
