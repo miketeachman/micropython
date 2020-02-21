@@ -1,0 +1,13 @@
+include('manifest.py')
+
+freeze('C:/Users/miket/Documents/micropython_projects/micropython-mqtt-kevinkk525', ('mqtt_as.py'))
+freeze('C:/Users/miket/Documents/micropython_projects/street sense/mqtt_config', ('mqtt_config.py'))
+freeze('C:/Users/miket/Documents/micropython_projects/micropython-async', ('uasyncio/__init__.py', 'uasyncio/core.py', 'aswitch.py'))
+freeze('C:/Users/miket/Documents/micropython_projects/micropython-async', ('asyn.py'))
+freeze('C:/Users/miket/Documents/micropython_projects/micropython-async/fast_io', ('ms_timer.py'))
+freeze('$(MPY_LIB_DIR)/logging', 'logging.py')
+freeze('C:/Users/miket/Documents/micropython_projects/micropython-ads1219', ('ads1219.py'))
+freeze('C:/Users/miket/Documents/micropython_projects/micropython-pms5003-minimal', ('pms5003.py'))
+freeze('C:/Users/miket/Documents/micropython_projects/Adafruit-uRTC', ('urtc.py'))
+freeze('C:/Users/miket/Documents/micropython_projects/micropython-si7021', ('si7021.py'))
+freeze('C:/Users/miket/Documents/micropython_projects/street sense', ('wavheader.py'))
