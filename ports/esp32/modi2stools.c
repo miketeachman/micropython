@@ -88,8 +88,8 @@
 #define NUM_BYTES_IN_STEREO_FRAME (8)
 
 typedef enum {
-    CHANNEL_LEFT = 0,
-    CHANNEL_RIGHT = 1,
+    CHANNEL_LEFT = 1,
+    CHANNEL_RIGHT = 0,
 } channel_t;
 
 typedef enum {
