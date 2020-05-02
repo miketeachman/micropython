@@ -65,6 +65,7 @@
 #include "modmachine.h"
 #include "softtimer.h"
 #include "i2c.h"
+#include "i2s.h"
 #include "spi.h"
 #include "uart.h"
 #include "timer.h"
@@ -526,6 +527,10 @@ soft_reset:
     #if MICROPY_HW_ENABLE_USB
     pyb_usb_init0();
     #endif
+    
+    #if MICROPY_HW_ENABLE_I2S2 || MICROPY_HW_ENABLE_I2S3
+    i2s_init0();
+    #endif
 
     // Initialise the local flash filesystem.
     // Create it if needed, mount in on /flash, and set it as current dir.
@@ -674,6 +679,9 @@ soft_reset_exit:
     uart_deinit_all();
     #if MICROPY_HW_ENABLE_CAN
     can_deinit_all();
+    #endif
+    #if MICROPY_HW_ENABLE_I2S2 || MICROPY_HW_ENABLE_I2S3
+    i2s_deinit();
     #endif
     machine_deinit();
 
