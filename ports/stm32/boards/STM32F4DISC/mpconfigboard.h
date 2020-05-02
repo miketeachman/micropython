@@ -65,6 +65,10 @@
 #define MICROPY_HW_CAN2_TX (pin_B13)
 #define MICROPY_HW_CAN2_RX (pin_B12)
 
+// I2C busses
+#define MICROPY_HW_ENABLE_I2S2      (1)
+#define MICROPY_HW_ENABLE_I2S3      (1)
+
 // USRSW is pulled low. Pressing the button makes the input go high.
 #define MICROPY_HW_USRSW_PIN        (pin_A0)
 #define MICROPY_HW_USRSW_PULL       (GPIO_NOPULL)

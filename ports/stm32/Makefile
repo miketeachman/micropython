@@ -327,6 +327,7 @@ SRC_C = \
 	servo.c \
 	dac.c \
 	adc.c \
+	i2s.c \
 	$(wildcard $(BOARD_DIR)/*.c)
 
 SRC_O = \
@@ -361,6 +362,8 @@ SRC_HAL = $(addprefix $(HAL_DIR)/Src/stm32$(MCU_SERIES)xx_,\
 	hal_flash_ex.c \
 	hal_gpio.c \
 	hal_i2c.c \
+	hal_i2s.c \
+	hal_i2s_ex.c \
 	hal_pcd.c \
 	hal_pcd_ex.c \
 	hal_pwr.c \
