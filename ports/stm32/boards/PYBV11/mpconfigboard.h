@@ -72,6 +72,10 @@
 #define MICROPY_HW_CAN2_TX   (pin_B13) // Y6
 #define MICROPY_HW_CAN2_RX   (pin_B12) // Y5
 
+// I2S busses
+#define MICROPY_HW_ENABLE_I2S2      (1)
+#define MICROPY_HW_ENABLE_I2S3      (0)
+
 // USRSW has no pullup or pulldown, and pressing the switch makes the input go low
 #define MICROPY_HW_USRSW_PIN        (pin_B3)
 #define MICROPY_HW_USRSW_PULL       (GPIO_PULLUP)
