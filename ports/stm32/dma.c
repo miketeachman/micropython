@@ -103,6 +103,29 @@ static const DMA_InitTypeDef dma_init_struct_spi_i2c = {
     #endif
 };
 
+// Default parameters to dma_init() for i2s; Channel and Direction
+// vary depending on the peripheral instance so they get passed separately
+static const DMA_InitTypeDef dma_init_struct_i2s = {
+    #if defined(STM32F4) || defined(STM32F7)
+    .Channel = 0,
+    #elif defined(STM32H7) || defined(STM32L0) || defined(STM32L4)
+    .Request = 0,
+    #endif
+    .Direction = 0,
+    .PeriphInc = DMA_PINC_DISABLE,
+    .MemInc = DMA_MINC_ENABLE,
+    .PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD,
+    .MemDataAlignment = DMA_MDATAALIGN_HALFWORD,
+    .Mode = DMA_NORMAL,
+    .Priority = DMA_PRIORITY_LOW,
+    #if defined(STM32F4) || defined(STM32F7) || defined(STM32H7)
+    .FIFOMode = DMA_FIFOMODE_DISABLE,
+    .FIFOThreshold = DMA_FIFO_THRESHOLD_FULL,
+    .MemBurst = DMA_MBURST_SINGLE,
+    .PeriphBurst = DMA_PBURST_SINGLE
+    #endif
+};
+
 #if ENABLE_SDIO && !defined(STM32H7)
 // Parameters to dma_init() for SDIO tx and rx.
 static const DMA_InitTypeDef dma_init_struct_sdio = {
@@ -242,6 +265,8 @@ const dma_descr_t dma_I2C_3_RX = { DMA1_Stream2, DMA_CHANNEL_3, dma_id_2,   &dma
 const dma_descr_t dma_I2C_2_RX = { DMA1_Stream2, DMA_CHANNEL_7, dma_id_2,   &dma_init_struct_spi_i2c };
 const dma_descr_t dma_SPI_2_RX = { DMA1_Stream3, DMA_CHANNEL_0, dma_id_3,   &dma_init_struct_spi_i2c };
 const dma_descr_t dma_SPI_2_TX = { DMA1_Stream4, DMA_CHANNEL_0, dma_id_4,   &dma_init_struct_spi_i2c };
+const dma_descr_t dma_I2S_2_RX = { DMA1_Stream3, DMA_CHANNEL_0, dma_id_3,   &dma_init_struct_i2s };
+const dma_descr_t dma_I2S_2_TX = { DMA1_Stream4, DMA_CHANNEL_0, dma_id_4,   &dma_init_struct_i2s };
 const dma_descr_t dma_I2C_3_TX = { DMA1_Stream4, DMA_CHANNEL_3, dma_id_4,   &dma_init_struct_spi_i2c };
 #if defined(STM32F7)
 const dma_descr_t dma_I2C_4_TX = { DMA1_Stream5, DMA_CHANNEL_2, dma_id_5,   &dma_init_struct_spi_i2c };
