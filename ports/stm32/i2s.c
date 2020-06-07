@@ -5,6 +5,7 @@
  *
  * Copyright (c) 2013, 2014 Damien P. George
  * Copyright (c) 2015 Bryan Morrissey
+ * Copyright (c) 2020 Mike Teachman
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -39,7 +40,6 @@
 #include "py/mphal.h"
 #include "irq.h"
 #include "pin.h"
-#include "led.h" // For debugging using led_toggle(n)
 #include "genhdr/pins.h"
 #include "dma.h"
 #include "bufhelper.h"
@@ -212,6 +212,7 @@ STATIC bool i2s_init(pyb_i2s_obj_t *i2s_obj) {
             }
         } else {
             // simplex: set up both DMA streams for SPI2, only one will be used
+            // TODO what to do when application tries to configure both I2S and SPI features on SPI2?
             i2s_obj->tx_dma_descr = &dma_I2S_2_TX;
             i2s_obj->rx_dma_descr = &dma_I2S_2_RX;
         }
@@ -311,6 +312,22 @@ STATIC bool i2s_init(pyb_i2s_obj_t *i2s_obj) {
         dma_init(&i2s_obj->tx_dma, i2s_obj->tx_dma_descr, DMA_MEMORY_TO_PERIPH, &i2s_obj->i2s);
         i2s_obj->i2s.hdmatx = &i2s_obj->tx_dma;
 
+        // Workaround fix for streaming methods...
+        // For streaming methods with a file based stream, I2S DMA IRQ priority must be lower than the SDIO DMA IRQ priority.
+        // Explanation:
+        //      i2s_stream_handler() is called in the I2S DMA IRQ handler context.  SD Card reads (SDIO peripheral) are called
+        //      in i2s_stream_handler() using DMA.  When a block of SD card data is finished being read the
+        //      SDIO DMA IRQ handler is never run because the I2S DMA IRQ handler is currently running and both IRQ have the
+        //      same NVIC priority - as setup in dma_init().  The end result is that i2s_stream_handler() gets "stuck" in endless
+        //      loop, in sdcard_wait_finished().  This happens on the 2nd call to i2s_stream_handler().
+        // The following two lines are a workaround to correct this problem.  When the priority of SDIO DMA IRQ is greater than
+        // I2S DMA IRQ the SDIO DMA IRQ handler will interrupt the I2S DMA IRQ handler, allowing sdcard_wait_finished()
+        // to complete.
+        // TODO figure out a more elegant way to solve this problem.
+        // Investigate:  use the 1/2 complete DMA callback to execute stream read()
+        NVIC_SetPriority(DMA1_Stream4_IRQn, (IRQ_PRI_DMA+1));
+        HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
+
         // Reset and initialize rx DMA
         dma_invalidate_channel(i2s_obj->rx_dma_descr);
 
@@ -391,7 +408,6 @@ STATIC void i2s_handle_mp_callback(pyb_i2s_obj_t *self) {
 }
 
 void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
-    led_state(1, 1); //DEBUG
     // I2S root pointer index is 1 if both I2S instances are enabled and I2S
     // instance is SPI3/I2S3; otherwise index is 0:
     pyb_i2s_obj_t *self;
@@ -424,11 +440,9 @@ void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
         // buffer transfer, call user-defined callback
         i2s_handle_mp_callback(self);
     }
-    led_state(1, 0); //DEBUG
 }
 
 void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s) {
-    led_state(2, 1); // DEBUG
     // I2S root pointer index is 1 if both I2S instances are enabled and I2S
     // instance is SPI3/I2S3; otherwise index is 0:
     pyb_i2s_obj_t *self;
@@ -451,7 +465,6 @@ void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s) {
             i2s_handle_mp_callback(self);
         }
     }
-    led_state(2, 0); //DEBUG
 }
 
 // I2S HalfCplt and Error callback stubs, currently unused
@@ -767,6 +780,7 @@ STATIC mp_obj_t pyb_i2s_make_new(const mp_obj_type_t *type, size_t n_args, size_
     }
 
 
+//  TODO see if there is a way to make the following mapping code a bit more elegant
 #if (MICROPY_HW_ENABLE_I2S3) && !(MICROPY_HW_ENABLE_I2S2)
 #define I2S_OBJECT_OFFSET (3)
 #else
@@ -776,6 +790,9 @@ STATIC mp_obj_t pyb_i2s_make_new(const mp_obj_type_t *type, size_t n_args, size_
     pyb_i2s_obj_t *i2s_obj;
     if (MP_STATE_PORT(pyb_i2s_obj_all)[i2s_id - I2S_OBJECT_OFFSET] == NULL) {
         // create new I2S object
+        // - the I2S object is allocated on the MicroPython heap
+        // - I2S root pointer is mapped to this I2S object
+        // - I2S root pointers are defined in mpconfigport.h
         i2s_obj = m_new_obj(pyb_i2s_obj_t);
         i2s_obj->base.type = &pyb_i2s_type;
         i2s_obj->i2s_id = i2s_id;
@@ -1084,16 +1101,6 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_KW(pyb_i2s_send_recv_obj, 1, pyb_i2s_send_recv);
 // Taken from stream.c; could use to make sure stream is opened in binary mode?
 #define STREAM_CONTENT_TYPE(stream) (((stream)->is_text) ? &mp_type_str : &mp_type_bytes)
 
-#if 0
-// helper functions for stream operations; to be removed if similar functions get
-// incorporated into stream.[ch]
-typedef enum {
-    MP_STREAM_OP_READ,
-    MP_STREAM_OP_WRITE,
-    MP_STREAM_OP_IOCTL,
-} mp_stream_op_t;
-#endif
-
 mp_obj_t mp_stream_op_supported(mp_obj_t self_in, uint32_t op) {
     struct _mp_obj_base_t *o = (struct _mp_obj_base_t *)self_in;
     
@@ -1111,7 +1118,7 @@ mp_obj_t mp_stream_op_supported(mp_obj_t self_in, uint32_t op) {
 }
 
 mp_obj_t mp_stream_read(mp_obj_t self_in, void *buf, mp_uint_t len) {
-    // Supported op check included here for protability and to be equivalent to
+    // Supported op check included here for portability and to be equivalent to
     // mp_stream_write; some stream read methods will now have redundant checks:
     struct _mp_obj_base_t *o = mp_stream_op_supported(self_in, MP_STREAM_OP_READ);
     int error;
@@ -1289,11 +1296,15 @@ STATIC mp_obj_t pyb_i2s_stream_in (mp_uint_t n_args, const mp_obj_t *pos_args,
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(pyb_i2s_stream_in_obj, 1, pyb_i2s_stream_in);
 
+// TODO implement DMA circular-double-buffered mode.  use 1/2 complete interrupt to control fill of buffer.
+// circular automatically links the buffers for uninterrupted streaming.  can also change linking of buffer on-the-fly:  this
+// would allow for multiple buffers to be linked, similar to the esp32.  advantage is that other apps can have a longer
+// worst case runtime before the I2S buffer needs to get written or read.
 STATIC void i2s_stream_handler(pyb_i2s_obj_t *self) {
     // i2s_stream_handler manages HAL_I2S_*_DMA functions and data transfers
     // between streams and buffers:
     int buf_sz = AUDIOBUFFER_BYTES / 4;
-    HAL_StatusTypeDef status;
+    HAL_StatusTypeDef status = HAL_OK;
 
     // Set xfer_state as indicated by xfer_signal:
     int sig = self->xfer_signal;
