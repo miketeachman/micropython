@@ -44,6 +44,7 @@
 #include "dma.h"
 #include "bufhelper.h"
 #include "i2s.h"
+#include "led.h" // For debugging using led_toggle(n)
 
 /// \moduleref pyb
 /// \class I2S - Inter-IC-Sound, a protocol to transfer isochronous audio data
@@ -67,7 +68,7 @@
 
 // Duplex streaming seems to require at least this much; there are hiccups at 8192
 // It may require some testing to determine the ideal value
-#define AUDIOBUFFER_BYTES 12288
+#define AUDIOBUFFER_BYTES (1024 * 8)
 
 typedef enum {
     INACTIVE       = 0x00,
@@ -157,6 +158,29 @@ static inline bool i2s_is_master(pyb_i2s_obj_t *i2s_obj) {
     return (i2s_obj->i2s.Init.Mode == I2S_MODE_MASTER_TX ||
             i2s_obj->i2s.Init.Mode == I2S_MODE_MASTER_RX);
 }
+
+#if 0
+static void led_flash_error(int colour, int count) {
+    for(;;) {
+        for (int c=0;c<count;c++) {
+            led_state(colour, 1);
+            HAL_Delay(300);
+            led_state(colour, 0);
+            HAL_Delay(300);
+        }
+        HAL_Delay(2000);
+    }
+}
+
+static void led_flash_info(int colour, int count) {
+    for (int c=0;c<count;c++) {
+        led_state(colour, 1);
+        HAL_Delay(300);
+        led_state(colour, 0);
+        HAL_Delay(300);
+    }
+}
+#endif
 
 // i2s_init0 is direct crib from stmhal/can.c - can_init0()
 void i2s_init0(void) {
@@ -325,6 +349,8 @@ STATIC bool i2s_init(pyb_i2s_obj_t *i2s_obj) {
         // to complete.
         // TODO figure out a more elegant way to solve this problem.
         // Investigate:  use the 1/2 complete DMA callback to execute stream read()
+
+        // set I2S Tx DMA interrupt priority
         NVIC_SetPriority(DMA1_Stream4_IRQn, (IRQ_PRI_DMA+1));
         HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
 
@@ -333,6 +359,10 @@ STATIC bool i2s_init(pyb_i2s_obj_t *i2s_obj) {
 
         dma_init(&i2s_obj->rx_dma, i2s_obj->rx_dma_descr, DMA_PERIPH_TO_MEMORY, &i2s_obj->i2s);
         i2s_obj->i2s.hdmarx = &i2s_obj->rx_dma;
+
+        // set I2S Rx DMA interrupt priority
+        NVIC_SetPriority(DMA1_Stream3_IRQn, (IRQ_PRI_DMA+1));
+        HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
 
         i2s_obj->xfer_state = INACTIVE;
         i2s_obj->is_enabled = true;
@@ -445,6 +475,7 @@ void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
 void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s) {
     // I2S root pointer index is 1 if both I2S instances are enabled and I2S
     // instance is SPI3/I2S3; otherwise index is 0:
+
     pyb_i2s_obj_t *self;
     if (0) {
 #if MICROPY_HW_ENABLE_I2S2 && MICROPY_HW_ENABLE_I2S3
@@ -971,7 +1002,7 @@ STATIC mp_obj_t pyb_i2s_recv(mp_uint_t n_args, const mp_obj_t *pos_args,
     }
     // TODO - implement 24-bit and 32-bit data transfers for all methods
     if (query_irq() == IRQ_STATE_DISABLED) {
-        status = HAL_I2S_Receive(&self->i2s, (uint16_t*)vstr.buf,
+       status = HAL_I2S_Receive(&self->i2s, (uint16_t*)vstr.buf,
                                  vstr.len / 2, args[1].u_int);
     } else {
         status = HAL_I2S_Receive_DMA(&self->i2s, (uint16_t*)vstr.buf, vstr.len / 2);
@@ -1109,7 +1140,7 @@ mp_obj_t mp_stream_op_supported(mp_obj_t self_in, uint32_t op) {
         mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("stream object required"));
     } else if (op == MP_STREAM_OP_READ && ((mp_stream_p_t *)o->type->protocol)->read == NULL) {
         mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("object with stream.read required"));
-    } else if (op == MP_STREAM_OP_READ && ((mp_stream_p_t *)o->type->protocol)->write == NULL) {
+    } else if (op == MP_STREAM_OP_WRITE && ((mp_stream_p_t *)o->type->protocol)->write == NULL) {
         mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("object with stream.write required"));
     } else if (op == MP_STREAM_OP_READ && ((mp_stream_p_t *)o->type->protocol)->ioctl == NULL) {
         mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("object with stream.ioctl required"));
@@ -1213,8 +1244,8 @@ STATIC mp_obj_t pyb_i2s_stream_out(mp_uint_t n_args, const mp_obj_t *pos_args,
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(pyb_i2s_stream_out_obj, 1, pyb_i2s_stream_out);
 
-STATIC mp_obj_t pyb_i2s_stream_in (mp_uint_t n_args, const mp_obj_t *pos_args,
-                                   mp_map_t *kw_args) {
+STATIC mp_obj_t pyb_i2s_stream_in(mp_uint_t n_args, const mp_obj_t *pos_args,
+                                  mp_map_t *kw_args) {
 
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_stream_in, MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
@@ -1296,10 +1327,12 @@ STATIC mp_obj_t pyb_i2s_stream_in (mp_uint_t n_args, const mp_obj_t *pos_args,
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(pyb_i2s_stream_in_obj, 1, pyb_i2s_stream_in);
 
-// TODO implement DMA circular-double-buffered mode.  use 1/2 complete interrupt to control fill of buffer.
-// circular automatically links the buffers for uninterrupted streaming.  can also change linking of buffer on-the-fly:  this
+// TODO implement DMA circular-double-buffered mode.
+// circular mode automatically links the buffers for uninterrupted streaming.  can also change linking of buffers on-the-fly:  this
 // would allow for multiple buffers to be linked, similar to the esp32.  advantage is that other apps can have a longer
 // worst case runtime before the I2S buffer needs to get written or read.
+// suspect that there are gaps in the samples caused by the delay in restarting RxDMA after Rx interrupt.  Circular
+// mode may fix that.
 STATIC void i2s_stream_handler(pyb_i2s_obj_t *self) {
     // i2s_stream_handler manages HAL_I2S_*_DMA functions and data transfers
     // between streams and buffers:
@@ -1358,7 +1391,6 @@ STATIC void i2s_stream_handler(pyb_i2s_obj_t *self) {
             status = HAL_I2S_Receive_DMA(&self->i2s,
                                          self->audiobuf_rx[self->pp_ptr],
                                          buf_sz / 2);
-
         } else {
             // TODO: clean up and raise an error?
             // shouldn't get here in normal operation
@@ -1375,7 +1407,6 @@ STATIC void i2s_stream_handler(pyb_i2s_obj_t *self) {
     }
 
     bool buf_ptr = !(self->pp_ptr);
-
     if ((self->xfer_state & STREAM_OUT) != 0) {
         if ((self->stream_tx_len > -1) && (buf_sz / 4 > self->stream_tx_len)) {
             buf_sz = self->stream_tx_len * 4;
@@ -1401,10 +1432,24 @@ STATIC void i2s_stream_handler(pyb_i2s_obj_t *self) {
             self->xfer_signal = I2S_SIG_EOF_TX;
         }
     }
+
     if ((self->xfer_state & STREAM_IN) != 0) {
+
         buf_sz = AUDIOBUFFER_BYTES / 4;
         if ((self->stream_rx_len > -1) && (buf_sz / 4 > self->stream_rx_len)) {
             buf_sz = self->stream_rx_len * 4;
+        }
+        // 32-bit dataformat:  I2S driver fills the buffer with 16-bit values.  Each 32-bit sample
+        // is composed of two 16-bit values.  But the ordering of these 16-bit values is NOT little endian.
+        // To correct this, every pair of 16-bit values needs to be swapped in the received buffer.
+        if (self->i2s.Init.DataFormat == I2S_DATAFORMAT_32B) {
+            for (uint32_t s=0; s<AUDIOBUFFER_BYTES / 8; s+=2){
+                uint16_t msw = self->audiobuf_rx[buf_ptr][s];
+                uint16_t lsw = self->audiobuf_rx[buf_ptr][s+1];
+
+                self->audiobuf_rx[buf_ptr][s] = lsw;
+                self->audiobuf_rx[buf_ptr][s+1] = msw;
+            }
         }
         mp_obj_t ret = mp_stream_write(self->dstream_rx, &self->audiobuf_rx[buf_ptr], buf_sz, MP_STREAM_RW_WRITE);
         if (mp_obj_is_integer(ret)) {
