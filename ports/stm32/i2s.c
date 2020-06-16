@@ -32,7 +32,7 @@
 #include "py/runtime.h"
 #include "py/gc.h"
 
-#if MICROPY_HW_ENABLE_I2S2 || MICROPY_HW_ENABLE_I2S3
+#if MICROPY_HW_ENABLE_I2S1 || MICROPY_HW_ENABLE_I2S2 || MICROPY_HW_ENABLE_I2S3
 
 #include "py/objstr.h"
 #include "py/objlist.h"
@@ -51,23 +51,19 @@
 ///
 /// I2S is a serial protocol for sending and receiving audio. At the physical
 /// level there are 3 or 4 lines: Bit Clock, Word Select, and 1 or 2 data lines
-/// for simplex or duplex operation. In addition, I2S can optionally provide a
+/// for simplex operation. In addition, I2S can optionally provide a
 /// Master Clock (MCLK) signal to drive an external codec, or accept an I2S
 /// clock input signal (I2S_CLKIN) from an external source to drive I2SPLL.
 ///
 
 // Possible DMA configurations for I2S busses:
+
+// TODO add F7 processor for SP1
 // SPI2 RX:     DMA1_Stream3.CHANNEL_0
 // SPI2 TX:     DMA1_Stream4.CHANNEL_0
-// I2S2_EXT RX: DMA1_Stream3.CHANNEL_3
-// I2S2_EXT TX: DMA1_Stream4.CHANNEL_2
 // SPI3 RX:     DMA1_Stream0.CHANNEL_0 or DMA1_Stream2.CHANNEL_0
 // SPI3 TX:     DMA1_Stream5.CHANNEL_0 or DMA1_Stream7.CHANNEL_0
-// I2S3_EXT RX: DMA1_Stream0.CHANNEL_3 or DMA1_Stream2.CHANNEL_2
-// I2S3_EXT TX: DMA1_Stream5.CHANNEL_2
 
-// Duplex streaming seems to require at least this much; there are hiccups at 8192
-// It may require some testing to determine the ideal value
 #define AUDIOBUFFER_BYTES (1024 * 8)
 
 typedef enum {
@@ -78,7 +74,6 @@ typedef enum {
     BUF_STR_DIV    = 0x04, // (xfer_state >= BUF_STR_DIV) indicates streaming
     STREAM_OUT     = 0x04,
     STREAM_IN      = 0x08,
-    STREAM_IN_OUT  = 0x0C,
 } xfer_state_t;
 
 // For buffer transfers, we want to be able to use the buffer methods write,
@@ -134,7 +129,6 @@ typedef struct _pyb_i2s_obj_t {
     uint16_t audiobuf_rx[2][AUDIOBUFFER_BYTES / 8];
     mp_int_t i2s_id : 8;
     bool is_enabled : 1;
-    bool is_duplex : 1;
     bool base_is_tx : 1; // base instance SPIx is either tx or rx
     bool pp_ptr : 1;     // ping-pong pointer for double buffers
 } pyb_i2s_obj_t;
@@ -147,11 +141,11 @@ typedef enum { BCK, WS, TX, RX, MCK, NUM_PINS } i2s_pin_t;
 // probably not needed here?
 
 static inline bool i2s_has_tx(pyb_i2s_obj_t *i2s_obj) {
-    return (i2s_obj->is_duplex || i2s_obj->base_is_tx);
+    return (i2s_obj->base_is_tx);
 }
 
 static inline bool i2s_has_rx(pyb_i2s_obj_t *i2s_obj) {
-    return (i2s_obj->is_duplex || !(i2s_obj->base_is_tx));
+    return (!(i2s_obj->base_is_tx));
 }
 
 static inline bool i2s_is_master(pyb_i2s_obj_t *i2s_obj) {
@@ -203,43 +197,16 @@ STATIC bool i2s_init(pyb_i2s_obj_t *i2s_obj) {
     // - Provide configuration to enable I2S_CKIN if it available (only if SDIO
     // is not configured)
 
-    // If I2Sx_SD (SPIx) and I2SxEXT_SD pins are both given, then
-    // init full duplex mode.
-    // - If only I2Sx_SD is given, init simplex mode
-    // - SD pin is configured as either Rx or Tx in pyb_i2s_init_helper
-    // based on postion in list; if ext_SD pin is present we set full-duplex
-    // option, and HAL_I2S_Init automatically sets up the ext I2Sxext
-    // instance as opposite direction (Rx or Tx) to I2Sx
     if (0) {
 #if MICROPY_HW_ENABLE_I2S2
     } else if (i2s_obj->i2s_id == 2) {
         i2s_obj->i2s.Instance = SPI2;
         __SPI2_CLK_ENABLE();
         // configure DMA streams - see RM0090 section 10.3.3, Tables 42 & 43
-        if (i2s_obj->is_duplex) {
-            if (i2s_obj->base_is_tx) {
-#if 0
-                // SPI2 instance is Tx
-                i2s_obj->tx_dma_stream = DMA1_Stream4;
-                i2s_obj->tx_dma_channel = DMA_CHANNEL_0;
-                // I2S2_ext instance is Rx
-                i2s_obj->rx_dma_stream = DMA1_Stream3;
-                i2s_obj->rx_dma_channel = DMA_CHANNEL_3;
-            } else {
-                // I2S2_ext instance is Rx
-                i2s_obj->tx_dma_stream = DMA1_Stream4;
-                i2s_obj->tx_dma_channel = DMA_CHANNEL_2;
-                // SPI2 instance is Rx
-                i2s_obj->rx_dma_stream = DMA1_Stream3;
-                i2s_obj->rx_dma_channel = DMA_CHANNEL_0;
-#endif                
-            }
-        } else {
-            // simplex: set up both DMA streams for SPI2, only one will be used
-            // TODO what to do when application tries to configure both I2S and SPI features on SPI2?
-            i2s_obj->tx_dma_descr = &dma_I2S_2_TX;
-            i2s_obj->rx_dma_descr = &dma_I2S_2_RX;
-        }
+        // simplex: set up both DMA streams for SPI2, only one will be used
+        // TODO what to do when application tries to configure both I2S and SPI features on SPI2?
+        i2s_obj->tx_dma_descr = &dma_I2S_2_TX;
+        i2s_obj->rx_dma_descr = &dma_I2S_2_RX;
 #endif
 #if MICROPY_HW_ENABLE_I2S3
     } else if (i2s_obj->i2s_id == 3) {
@@ -247,35 +214,13 @@ STATIC bool i2s_init(pyb_i2s_obj_t *i2s_obj) {
         __SPI3_CLK_ENABLE();
         // configure DMA streams - see RM0090 section 10.3.3, Tables 42 & 43
         // I2S3 has alternate stream configurations, listed here in comments
-        if (i2s_obj->is_duplex) {
-            if (i2s_obj->base_is_tx) {
-                // SPI3 instance is TX
-                i2s_obj->tx_dma_stream = DMA1_Stream5;
-                //i2s_obj->tx_dma_stream = DMA1_Stream7;
-                i2s_obj->tx_dma_channel = DMA_CHANNEL_0;
-                // I2S3_ext instance is RX (DMA1_Stream0.CHANNEL_3 or DMA1_Stream2.CHANNEL_2)
-                i2s_obj->rx_dma_stream = DMA1_Stream0;
-                i2s_obj->rx_dma_channel = DMA_CHANNEL_3;
-                //i2s_obj->rx_dma_stream = DMA1_Stream2;
-                //i2s_obj->rx_dma_channel = DMA_CHANNEL_2;
-            } else {
-                // I2S3_ext instance is TX
-                i2s_obj->tx_dma_stream = DMA1_Stream5;
-                i2s_obj->tx_dma_channel = DMA_CHANNEL_2;
-                // SPI3 instance is RX
-                i2s_obj->rx_dma_stream = DMA1_Stream0;
-                //i2s_obj->rx_dma_stream = DMA1_Stream2;
-                i2s_obj->rx_dma_channel = DMA_CHANNEL_0;
-            }
-        } else {
-            // Simplex: set up both DMA streams for SPI3, only one will be used
-            i2s_obj->tx_dma_stream = DMA1_Stream5;
-            //i2s_obj->tx_dma_stream = DMA1_Stream7;
-            i2s_obj->tx_dma_channel = DMA_CHANNEL_0;
-            i2s_obj->rx_dma_stream = DMA1_Stream0;
-            //i2s_obj->rx_dma_stream = DMA1_Stream2;
-            i2s_obj->rx_dma_channel = DMA_CHANNEL_0;
-        }
+        // set up both DMA streams for SPI3, only one will be used
+        i2s_obj->tx_dma_stream = DMA1_Stream5;
+        //i2s_obj->tx_dma_stream = DMA1_Stream7;
+        i2s_obj->tx_dma_channel = DMA_CHANNEL_0;
+        i2s_obj->rx_dma_stream = DMA1_Stream0;
+        //i2s_obj->rx_dma_stream = DMA1_Stream2;
+        i2s_obj->rx_dma_channel = DMA_CHANNEL_0;
 #endif
     } else {
         // invalid i2s_id number; shouldn't get here as i2s object should not
@@ -300,13 +245,25 @@ STATIC bool i2s_init(pyb_i2s_obj_t *i2s_obj) {
     }
 
     // Configure and enable I2SPLL - I2S_MASTER modes only:
-    // References: see table 126 of RM0090, also lines 457-494 of
-    // STM32Cube_FW_F4_V1.5.0/Drivers/BSP/STM32F4-Discovery/stm32f4_discovery_audio.c
-    // 48kHz family is accurate for 8, 16, 24, and 48kHz but not 32 or 96
-    // 44.1kHz family is accurate for 11.025, 22.05 and 44.1kHz but not 88.2
+    // ====================================================
+    // References for STM32F405 (pybv10 and pybv11):
+    //    1) table 127 "Audio frequency precision" of RM0090 Reference manual
+    //    2) lines 457-494 of STM32Cube_FW_F4_V1.5.0/Drivers/BSP/STM32F4-Discovery/stm32f4_discovery_audio.c
+    //
+    // References for STM32F722 (PYBD-SF2W) and STM32F723 (PYBD-SF3W)
+    //    1) table 204 "Audio-frequency precision" of RM0385 Reference manual
+    //
+    // References for STM32F767 (PYBD-SF6W)
+    //    1) table 229 "Audio-frequency precision" of RM0410 Reference manual
+
+
+    //    48kHz family is accurate for 8, 16, 24, and 48kHz but not 32 or 96
+    //    44.1kHz family is accurate for 11.025, 22.05 and 44.1kHz but not 88.2
 
     // TODO: support more of the commonly-used frequencies and account for 16/32 bit frames
     // Also: Refactor to use macros as provided by stm32f4xx_hal_rcc_ex.h
+#if defined (STM32F405xx)
+    // __HAL_RCC_PLLI2S_CONFIG(__PLLI2SN__, __PLLI2SR__)
     __HAL_RCC_PLLI2S_DISABLE();
     if (i2s_is_master(i2s_obj)) {
         if (i2s_obj->i2s.Init.MCLKOutput == I2S_MCLKOUTPUT_ENABLE) {
@@ -317,18 +274,42 @@ STATIC bool i2s_init(pyb_i2s_obj_t *i2s_obj) {
             }
         } else {
             if ((i2s_obj->i2s.Init.AudioFreq & 0x7) == 0) {
-                __HAL_RCC_PLLI2S_CONFIG(384, 5);
+                __HAL_RCC_PLLI2S_CONFIG(384, 5); // TODO
             } else {
-                __HAL_RCC_PLLI2S_CONFIG(429, 4);
+                __HAL_RCC_PLLI2S_CONFIG(429, 4); // TODO
             }
         }
         __HAL_RCC_PLLI2S_ENABLE();
     }
+#elif defined (STM32F722xx) || defined (STM32F723xx)
+    // __HAL_RCC_PLLI2S_CONFIG(__PLLI2SN__, __PLLI2SQ__, __PLLI2SR__)
+    __HAL_RCC_PLLI2S_DISABLE();
+    if (i2s_is_master(i2s_obj)) {
+        if (i2s_obj->i2s.Init.MCLKOutput == I2S_MCLKOUTPUT_ENABLE) {
+            if ((i2s_obj->i2s.Init.AudioFreq & 0x7) == 0) {
+                __HAL_RCC_PLLI2S_CONFIG(258, 1, 3); // TODO
+            } else {
+                __HAL_RCC_PLLI2S_CONFIG(271, 1, 2); // TODO
+            }
+        } else {
+            if ((i2s_obj->i2s.Init.AudioFreq & 0x7) == 0) {
+                __HAL_RCC_PLLI2S_CONFIG(384, 1, 5); // TODO
+            } else {
+                __HAL_RCC_PLLI2S_CONFIG(429, 1, 4); // TODO
+            }
+        }
+        __HAL_RCC_PLLI2S_ENABLE();
+    }
+#elif defined (STM32F767xx)
+#error I2S not supported on the STM32F767xx processor (coming soon ...)
+#else
+#error I2S does not support this processor
+#endif // STM32F405xx
 
     if (HAL_I2S_Init(&i2s_obj->i2s) == HAL_OK) {
         // Reset and initialize Tx and Rx DMA channels
         // TODO: Currently both DMA's are initialized regardless of whether I2S
-        // is instantiated as simplex or duplex - should we check instead?
+        // is instantiated - optimize this
 
         // Reset and initialize tx DMA
         dma_invalidate_channel(i2s_obj->tx_dma_descr);
@@ -439,7 +420,7 @@ STATIC void i2s_handle_mp_callback(pyb_i2s_obj_t *self) {
 
 void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
     // I2S root pointer index is 1 if both I2S instances are enabled and I2S
-    // instance is SPI3/I2S3; otherwise index is 0:
+    // instance is SPI3/I2S3; otherwise index is 0
     pyb_i2s_obj_t *self;
     if (0) {
 #if MICROPY_HW_ENABLE_I2S2 && MICROPY_HW_ENABLE_I2S3
@@ -474,7 +455,7 @@ void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
 
 void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s) {
     // I2S root pointer index is 1 if both I2S instances are enabled and I2S
-    // instance is SPI3/I2S3; otherwise index is 0:
+    // instance is SPI3/I2S3; otherwise index is 0
 
     pyb_i2s_obj_t *self;
     if (0) {
@@ -485,25 +466,23 @@ void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s) {
     } else {
         self = MP_STATE_PORT(pyb_i2s_obj_all)[0];
     }
-
-    // In duplex mode, both HAL_I2S_TxCpltCallback and HAL_I2S_RxCpltCallback will
-    // be triggered. This callback is defined to handle Rx-only transfers; it is
-    // skipped for duplex transfers so callback code is only processed once:
-    if (!self->is_duplex) {
-        if (self->xfer_state == STREAM_IN) {
-            i2s_stream_handler(self);
-        } else if (self->xfer_state > INACTIVE && self->xfer_state < BUF_STR_DIV) {
-            i2s_handle_mp_callback(self);
-        }
+    
+    if (self->xfer_state >= BUF_STR_DIV) {
+        i2s_stream_handler(self);
+    } else if (self->xfer_state != INACTIVE) {
+        // buffer transfer, call user-defined callback
+        i2s_handle_mp_callback(self);
     }
+}    
+    
+void HAL_I2S_ErrorCallback(I2S_HandleTypeDef *hi2s) {
+    uint32_t errorCode = HAL_I2S_GetError(hi2s);
+    printf("I2S Error = %ld\n", errorCode);
 }
 
-// I2S HalfCplt and Error callback stubs, currently unused
+// I2S HalfCplt callback stubs, currently unused
 void HAL_I2S_RxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {}
 void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {}
-void HAL_I2S_ErrorCallback(I2S_HandleTypeDef *hi2s) {
-    printf("I2S Error\n");
-}
 
 /******************************************************************************/
 /* Micro Python bindings                                                      */
@@ -605,11 +584,8 @@ STATIC mp_obj_t pyb_i2s_init_helper(pyb_i2s_obj_t *self, mp_uint_t n_args,
     init->CPOL       = args[3].u_int ? I2S_CPOL_HIGH : I2S_CPOL_LOW;
     init->AudioFreq  = args[4].u_int;
     init->MCLKOutput = args[6].u_int ? I2S_MCLKOUTPUT_ENABLE : I2S_MCLKOUTPUT_DISABLE;
-    init->FullDuplexMode = self->is_duplex ?
-        I2S_FULLDUPLEXMODE_ENABLE : I2S_FULLDUPLEXMODE_DISABLE;
-
     // If an I2S object had previously registered callback, the default is to
-    // keep that callback. Is this correct, or should the default be to set the
+    // keep that callback. TODO Is this correct, or should the default be to set the
     // callback to None on init?
     if (args[7].u_obj != mp_const_none) {
         pyb_i2s_callback(self, args[7].u_obj);
@@ -643,29 +619,25 @@ STATIC mp_obj_t pyb_i2s_init_helper(pyb_i2s_obj_t *self, mp_uint_t n_args,
 /// \classmethod \constructor(bus, ...)
 ///
 /// Construct an I2S object with the given list of pins.
-/// I2S requires a clock pin (CK), a word select pin (WS) and either
-/// one or two data pins.
+/// I2S requires a clock pin (CK), a word select pin (WS) and
+/// one data pin.
 /// The pins can be passed as either a list or a tuple with the format
 /// [Clock, Word Select, TX Data, RX Data]
-/// If two data pins are provided, one must be an SD pin and the other must
-/// be a corresponding SDext pin; the I2S port will be initialized in duplex
-/// (TX + RX) mode.
-/// If only one data pin is provided, it must be an SD (not SDext) pin. The
-/// I2S port will be initialized in simplex mode, with the direction determined
+/// The I2S port will be initialized in simplex mode, with the direction determined
 /// by the position of the data pin in the list.
 /// Examples:
-/// pin_list = ['B10','B12','C3','C2'] - Duplex mode, C3 as Tx, C2 as Rx
 /// pin_list = ['B10','B12',0,'C2'] - Simplex mode, C2 as RX
-/// pin_list = ['Y6','Y5','Y7','Y8'] - Use board name strings
-/// pin_list = ('Y6','Y5','Y7','Y8') - Tuple works as well as list
+/// pin_list = ['Y6','Y5','Y7',0] - Simplex mode, Y7 as TX
 /// Mixed list of strings and objects:
-/// pin_list = [pyb.Pin.cpu.B10,'B12','Y7','pyb.Pin.board.Y8']
+/// pin_list = [pyb.Pin.cpu.B10,'B12',0,'pyb.Pin.board.Y8']
 ///
-/// Valid pins for I2S2 on the pyboard:
+/// Valid pins for I2S1 on the pyboard D:
+/// TODO add Valid pins 
+///
+/// Valid pins for I2S2 on the pyboard v10/v11:
 /// CK -    PB13 / Y6,  PB10 / Y9     (SPI2 SCK)
 /// WS -    PB12 / Y5,  PB9  / Y4     (SPI2 NSS)
 /// SD -    PB15 / Y8,  PC3  / X22    (SPI2 MOSI)
-/// SDext - PB14 / Y7,  PC2  / X21    (SPI2 MISO)
 /// MCK -   PC6 / Y1
 ///
 /// The I2S3 port is disabled by default on the pyboard, as its pins would
@@ -675,7 +647,6 @@ STATIC mp_obj_t pyb_i2s_init_helper(pyb_i2s_obj_t *self, mp_uint_t n_args,
 /// CK -    PC10 / NA (SD_D2),  PB3  / X17 (USR SW)       (SPI3 SCK)
 /// WS -    PA4  / X5,          PA15 / P3  (YELLOW LED)   (SPI3 NSS)
 /// SD -    PC12 / NA (SD_CK),  PB5  / NA  (MMA_AVDD)     (SPI3 MOSI)
-/// SDext - PC11 / NA (SD_D3),  PB4  / P2  (BLUE LED)     (SPI3 MISO)
 /// MCK -   PC7 (Y2)
 ///
 /// With no additional parameters, the I2S object is created but not
@@ -732,13 +703,10 @@ STATIC mp_obj_t pyb_i2s_make_new(const mp_obj_type_t *type, size_t n_args, size_
     // Each entry of pins[] array (0=BCK, 1=WS, 2=TX, 3=RX) is checked to
     // determine if it is valid for its designated function.
     // Of the two entries for data pins (2-TX and 3-RX) exactly one of them
-    // must be a valid base SD pin for the same I2S port as BCK and WS; the
-    // other can be either a valid SDext pin to select duplex mode, or empty
-    // to select simplex mode.
+    // must be a valid base SD pin for the same I2S port as BCK and WS
 
     const pin_af_obj_t *pin_af[5];
     mp_uint_t i2s_id = 0;
-    bool is_duplex = false;
     bool base_is_tx = false;
     qstr pin_err = 0;
 
@@ -769,34 +737,16 @@ STATIC mp_obj_t pyb_i2s_make_new(const mp_obj_type_t *type, size_t n_args, size_
         }
     }
 
-#if (0)
-    for (int i = 0; i < NUM_PINS; i++) {
-        if (pins[i]) {
-            printf("pin = %s, af = %s\n", qstr_str(pins[i]->name), qstr_str(pin_af[i]->name));
-        } else {
-            printf("pin = %s, af = %s\n", "no pin", "no af");
-        }
-    }
-#endif
-
     if (pin_af[WS]->type == AF_PIN_TYPE_I2S_WS) {
         // Clock and Word Select pins are valid
         if (pin_af[TX]->type == AF_PIN_TYPE_I2S_SD) {
             base_is_tx = true;
-            if (pin_af[RX]->type == AF_PIN_TYPE_I2S_EXTSD) {
-                is_duplex = true;
-            } else if (pins[RX] == MP_OBJ_NULL) {
-                is_duplex = false;
-            } else {
+            if (pins[RX] != MP_OBJ_NULL) {
                 pin_err = pins[RX]->name;
             }
         } else if (pin_af[RX]->type == AF_PIN_TYPE_I2S_SD) {
             base_is_tx = false;
-            if (pin_af[TX]->type == AF_PIN_TYPE_I2S_EXTSD) {
-                is_duplex = true;
-            } else if (pins[TX] == MP_OBJ_NULL) {
-                is_duplex = false;
-            } else {
+            if (pins[TX] != MP_OBJ_NULL) {
                 pin_err = pins[TX]->name;
             }
         } else {
@@ -834,7 +784,6 @@ STATIC mp_obj_t pyb_i2s_make_new(const mp_obj_type_t *type, size_t n_args, size_
     }
 
     i2s_obj->callback = mp_const_none;
-    i2s_obj->is_duplex = is_duplex;
     i2s_obj->base_is_tx = base_is_tx;
     for (int i = 0; i < NUM_PINS; i++) {
         i2s_obj->pins[i] = pins[i];
@@ -907,12 +856,6 @@ STATIC mp_obj_t pyb_i2s_send(mp_uint_t n_args, const mp_obj_t *pos_args,
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args,
                      MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    // 'send' can be used in either simplex or duplex mode, but only if the
-    // base i2s instance is in TX mode - in duplex mode, the extended instance
-    // must transmit using send_recv
-
-    // TODO - invoke HAL_I2SEx_TransmitReceive_DMA to handle send on I2Sx_EXT
-    // interfaces when available instead of raising error
     if (!self->base_is_tx) {
         mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) base instance not in transmit mode"), self->i2s_id);
     }
@@ -962,6 +905,9 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_KW(pyb_i2s_send_obj, 1, pyb_i2s_send);
 ///
 /// Return value: if `recv` is an integer then a new buffer of the bytes received,
 /// otherwise the same buffer that was passed in to `recv`.
+///
+/// TODO implement a flush to overcome the alignment issues for back-to-back reads
+/// https://community.st.com/s/question/0D50X00009XkeU5SAJ/stm32f7-i2s-dma-data-shift-flushing-issue
 STATIC mp_obj_t pyb_i2s_recv(mp_uint_t n_args, const mp_obj_t *pos_args,
                              mp_map_t *kw_args) {
     // TODO check transmission size for I2S
@@ -977,12 +923,6 @@ STATIC mp_obj_t pyb_i2s_recv(mp_uint_t n_args, const mp_obj_t *pos_args,
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args,
                      MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    // 'recv' can be used in either simplex or duplex mode, but only if the
-    // base i2s instance is in RX mode - in duplex mode, the extended instance
-    // must receive using send_recv
-
-    // TODO - invoke HAL_I2SEx_TransmitReceive_DMA to handle recv on I2Sx_EXT
-    // interfaces when available instead of raising error?
     if (self->base_is_tx) {
         mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) base instance not in receive mode"), self->i2s_id);
     }
@@ -1025,108 +965,6 @@ STATIC mp_obj_t pyb_i2s_recv(mp_uint_t n_args, const mp_obj_t *pos_args,
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(pyb_i2s_recv_obj, 1, pyb_i2s_recv);
 
 // TODO - adapt docstrings copied from spi.c for i2s
-
-/// \method send_recv(send, recv=None, *, timeout=100)
-///
-/// Send and receive data on the bus at the same time:
-///
-///   - `send` is the data to send (an integer to send, or a buffer object).
-///   - `recv` is a mutable buffer which will be filled with received bytes.
-///   It can be the same as `send`, or omitted.  If omitted, a new buffer will
-///   be created.
-///   - `timeout` is the timeout in milliseconds to wait for the receive.
-///
-/// Return value: the buffer with the received bytes.
-STATIC mp_obj_t pyb_i2s_send_recv(mp_uint_t n_args, const mp_obj_t *pos_args,
-                                  mp_map_t *kw_args) {
-
-    static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_send,    MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
-        { MP_QSTR_recv,    MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
-        { MP_QSTR_timeout, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = -1} },
-    };
-
-    // parse args
-    pyb_i2s_obj_t *self = pos_args[0];
-    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
-    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args,
-                     MP_ARRAY_SIZE(allowed_args), allowed_args, args);
-
-    // TODO - invoke HAL_I2SEx_TransmitReceive_DMA to handle recv on I2Sx_EXT
-    // interfaces when available instead of raising error?
-    // TODO - Could this test be wrapped in a simple inline function to replace
-    // the pyb_i2s_obj->is_duplex flag?
-    if (self->i2s.Init.FullDuplexMode != I2S_FULLDUPLEXMODE_ENABLE) {
-        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) not in duplex mode"), self->i2s_id);
-    }
-    if (self->xfer_state >= BUF_STR_DIV) {
-        mp_raise_msg(&mp_type_ValueError, MP_ERROR_TEXT("Buffer op not allowed while streaming"));
-    }
-    self->xfer_state = BUFFER_RD_WR;
-    // get buffers to send from/receive to
-    mp_buffer_info_t bufinfo_send;
-    uint8_t data_send[1];
-    mp_buffer_info_t bufinfo_recv;
-    vstr_t vstr_recv;
-    mp_obj_t o_ret;
-
-    if (args[0].u_obj == args[1].u_obj) {
-        // same object for send and receive, it must be a r/w buffer
-        mp_get_buffer_raise(args[0].u_obj, &bufinfo_send, MP_BUFFER_RW);
-        bufinfo_recv = bufinfo_send;
-        o_ret = args[0].u_obj;
-    } else {
-        // get the buffer to send from
-        pyb_buf_get_for_send(args[0].u_obj, &bufinfo_send, data_send);
-
-        // get the buffer to receive into
-        if (args[1].u_obj == MP_OBJ_NULL) {
-            // only send argument given, so create a fresh buffer of the send length
-            vstr_init_len(&vstr_recv, bufinfo_send.len);
-            bufinfo_recv.len = vstr_recv.len;
-            bufinfo_recv.buf = vstr_recv.buf;
-            o_ret = MP_OBJ_NULL;
-        } else {
-            // recv argument given
-            mp_get_buffer_raise(args[1].u_obj, &bufinfo_recv, MP_BUFFER_WRITE);
-            if (bufinfo_recv.len != bufinfo_send.len) {
-                mp_raise_msg(&mp_type_ValueError, MP_ERROR_TEXT("recv must be same length as send"));
-            }
-            o_ret = args[1].u_obj;
-        }
-    }
-
-    // send and receive the data
-    HAL_StatusTypeDef status;
-    status = i2s_bus_sync(self, 0 /*polarity*/, 100);
-    if (status != HAL_OK) {
-        mp_raise_msg(&mp_type_ValueError, MP_ERROR_TEXT("No I2S bus clock"));
-    }
-    // TODO - implement 24-bit and 32-bit data width cases for all methods
-    if (query_irq() == IRQ_STATE_DISABLED) {
-        status = HAL_I2SEx_TransmitReceive(&self->i2s, bufinfo_send.buf, bufinfo_recv.buf,
-                                           bufinfo_send.len / 2, args[2].u_int);
-    } else {
-        status = HAL_I2SEx_TransmitReceive_DMA(&self->i2s, bufinfo_send.buf,
-                                               bufinfo_recv.buf, bufinfo_send.len / 2);
-        if (status == HAL_OK) {
-            status = i2s_wait_dma_finished(&self->i2s, args[2].u_int);
-        }
-    }
-
-    if (status != HAL_OK) {
-        mp_hal_raise(status);
-    }
-
-    // return the received data
-    if (o_ret != MP_OBJ_NULL) {
-        return o_ret;
-    } else {
-        return mp_obj_new_str_from_vstr(&mp_type_bytes, &vstr_recv);
-    }
-}
-STATIC MP_DEFINE_CONST_FUN_OBJ_KW(pyb_i2s_send_recv_obj, 1, pyb_i2s_send_recv);
-
 
 /**** I2S streaming methods: ****/
 // Taken from stream.c; could use to make sure stream is opened in binary mode?
@@ -1187,20 +1025,9 @@ STATIC mp_obj_t pyb_i2s_stream_out(mp_uint_t n_args, const mp_obj_t *pos_args,
         mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) not configured for tx"), self->i2s_id);
     }
 
-    // If I2S state is not 'ready', raise an error _unless_ the current transaction is a
-    // simplex stream_in(); in that case set signals and stream handle to begin duplex
-    // stream_in + stream_out with next callback:
+    // If I2S state is not 'ready', raise an error
     if (HAL_I2S_GetState(&self->i2s) != HAL_I2S_STATE_READY) {
-        if (self->xfer_state != STREAM_IN) {
-            mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) bus busy"), self->i2s_id);
-        } else {
-            // attach stream handle to i2s object and update state for
-            // stream_handler to add stream_out to ongoing stream transaction 
-            self->xfer_signal = I2S_SIG_NONE;
-            self->xfer_state |= STREAM_OUT;
-            self->stream_tx_len = args[2].u_int;
-            self->dstream_tx = stream;
-        }
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) bus busy"), self->i2s_id);
     } else {
         // set up for simplex stream_out
         self->xfer_signal = I2S_SIG_NONE;
@@ -1267,20 +1094,9 @@ STATIC mp_obj_t pyb_i2s_stream_in(mp_uint_t n_args, const mp_obj_t *pos_args,
         mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) not configured for rx"), self->i2s_id);
     }
     
-    // If I2S state is not 'ready', raise an error _unless_ the current transaction is a
-    // simplex stream_out(); in that case set signals and stream handle to begin duplex
-    // stream_in + stream_out with next callback:
+    // If I2S state is not 'ready', raise an error
     if (HAL_I2S_GetState(&self->i2s) != HAL_I2S_STATE_READY) {
-        if (self->xfer_state != STREAM_OUT) {
-            mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) bus busy"), self->i2s_id);
-        } else {
-            // attach stream handle to i2s object and update state for
-            // stream_handler to add stream_in to ongoing stream transaction 
-            self->xfer_signal = I2S_SIG_NONE;
-            self->xfer_state |= STREAM_IN;
-            self->stream_rx_len = args[2].u_int;
-            self->dstream_rx = stream;
-        }
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) bus busy"), self->i2s_id);
     } else {
         // set up for simplex stream_in
         self->xfer_signal = I2S_SIG_NONE;
@@ -1294,7 +1110,7 @@ STATIC mp_obj_t pyb_i2s_stream_in(mp_uint_t n_args, const mp_obj_t *pos_args,
         // from stream_out - the order of operations also must be reversed; the receive
         // must fill the buffer _before_ the buffer is written out a stream, and data
         // must be written out after the last receive. stream_in initiates the streaming
-        // process by calling HAL_I2S_Receive_DMA or HAL_I2SEx_TransmitReceive_DMA, and
+        // process by calling HAL_I2S_Receive_DMA and
         // any data received is written to dstream_rx by stream_handler when it is
         // invoked via HAL I2S callback
 
@@ -1304,19 +1120,9 @@ STATIC mp_obj_t pyb_i2s_stream_in(mp_uint_t n_args, const mp_obj_t *pos_args,
             mp_raise_msg(&mp_type_ValueError, MP_ERROR_TEXT("No I2S bus clock"));
         }
 
-        if (self->is_duplex) {
-            // clear transmit buffers to use duplex function to begin simplex stream_in:
-            memset(&self->audiobuf_tx[0], 0, buf_sz);
-            memset(&self->audiobuf_tx[1], 0, buf_sz);
-            status = HAL_I2SEx_TransmitReceive_DMA(&self->i2s,
-                                                   self->audiobuf_tx[self->pp_ptr],
-                                                   self->audiobuf_rx[self->pp_ptr],
-                                                   buf_sz / 2);
-        } else {
-            status = HAL_I2S_Receive_DMA(&self->i2s,
-                                         self->audiobuf_rx[self->pp_ptr],
-                                         buf_sz / 2);
-        }
+        status = HAL_I2S_Receive_DMA(&self->i2s,
+                                     self->audiobuf_rx[self->pp_ptr],
+                                     buf_sz / 2);
 
         if (status != HAL_OK) {
             mp_hal_raise(status);
@@ -1346,14 +1152,14 @@ STATIC void i2s_stream_handler(pyb_i2s_obj_t *self) {
         self->xfer_state = INACTIVE;
         self->xfer_signal = I2S_SIG_NONE;
     } else if (sig == I2S_SIG_STOP_RX || sig == I2S_SIG_EOF_RX) {
-        if (state == STREAM_OUT || state == STREAM_IN_OUT) {
+        if (state == STREAM_OUT) {
             self->xfer_state = STREAM_OUT;
         } else {
             self->xfer_state = INACTIVE;
         }
         self->xfer_signal = I2S_SIG_NONE;
     } else if (sig == I2S_SIG_STOP_TX || sig == I2S_SIG_EOF_TX) {
-        if (state == STREAM_IN || state == STREAM_IN_OUT) {
+        if (state == STREAM_IN) {
             self->xfer_state = STREAM_IN;
         } else {
             self->xfer_state = INACTIVE;
@@ -1369,19 +1175,7 @@ STATIC void i2s_stream_handler(pyb_i2s_obj_t *self) {
     if (self->xfer_state >= BUF_STR_DIV) {
         // xfer_state indicates active stream transfer
         self->pp_ptr = !(self->pp_ptr);
-        if (self->is_duplex) {
-            int sz;
-            if (self->xfer_state == STREAM_IN) {
-                sz = buf_sz / 2;
-            } else {
-                sz = self->last_stream_read_sz / 2;
-            }
-            status = HAL_I2SEx_TransmitReceive_DMA(&self->i2s,
-                                                   self->audiobuf_tx[self->pp_ptr],
-                                                   self->audiobuf_rx[self->pp_ptr],
-                                                   sz);
-
-        } else if (self->xfer_state == STREAM_OUT) {
+        if (self->xfer_state == STREAM_OUT) {
             status = HAL_I2S_Transmit_DMA(&self->i2s,
                                           self->audiobuf_tx[self->pp_ptr],
                                           self->last_stream_read_sz / 2);
@@ -1441,7 +1235,7 @@ STATIC void i2s_stream_handler(pyb_i2s_obj_t *self) {
         }
         // 32-bit dataformat:  I2S driver fills the buffer with 16-bit values.  Each 32-bit sample
         // is composed of two 16-bit values.  But the ordering of these 16-bit values is NOT little endian.
-        // To correct this, every pair of 16-bit values needs to be swapped in the received buffer.
+        // To correct this, every pair of 16-bit values needs to be swapped in the rx buffer.
         if (self->i2s.Init.DataFormat == I2S_DATAFORMAT_32B) {
             for (uint32_t s=0; s<AUDIOBUFFER_BYTES / 8; s+=2){
                 uint16_t msw = self->audiobuf_rx[buf_ptr][s];
@@ -1540,7 +1334,6 @@ STATIC const mp_map_elem_t pyb_i2s_locals_dict_table[] = {
     { MP_OBJ_NEW_QSTR(MP_QSTR_deinit), (mp_obj_t)&pyb_i2s_deinit_obj },
     { MP_OBJ_NEW_QSTR(MP_QSTR_send), (mp_obj_t)&pyb_i2s_send_obj },
     { MP_OBJ_NEW_QSTR(MP_QSTR_recv), (mp_obj_t)&pyb_i2s_recv_obj },
-    { MP_OBJ_NEW_QSTR(MP_QSTR_send_recv), (mp_obj_t)&pyb_i2s_send_recv_obj },
     { MP_OBJ_NEW_QSTR(MP_QSTR_stream_out), (mp_obj_t)&pyb_i2s_stream_out_obj },
     { MP_OBJ_NEW_QSTR(MP_QSTR_stream_in), (mp_obj_t)&pyb_i2s_stream_in_obj },
     { MP_OBJ_NEW_QSTR(MP_QSTR_pause), (mp_obj_t)&pyb_i2s_pause_obj },
@@ -1576,4 +1369,4 @@ const mp_obj_type_t pyb_i2s_type = {
     .locals_dict = (mp_obj_t)&pyb_i2s_locals_dict,
 };
 
-#endif // MICROPY_HW_ENABLE_I2S2 || MICROPY_HW_ENABLE_I2S3
+#endif // MICROPY_HW_ENABLE_I2S1 || MICROPY_HW_ENABLE_I2S2 || MICROPY_HW_ENABLE_I2S3

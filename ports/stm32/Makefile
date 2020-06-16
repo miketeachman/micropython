@@ -378,7 +378,6 @@ HAL_SRC_C += $(addprefix $(HAL_DIR)/Src/stm32$(MCU_SERIES)xx_,\
 	hal_gpio.c \
 	hal_i2c.c \
 	hal_i2s.c \
-	hal_i2s_ex.c \
 	hal_pcd.c \
 	hal_pcd_ex.c \
 	hal_pwr.c \
@@ -415,6 +414,13 @@ HAL_SRC_C += $(addprefix $(HAL_DIR)/Src/stm32$(MCU_SERIES)xx_,\
 	hal_dcmi.c \
 	)
 endif
+
+ifeq ($(MCU_SERIES),$(filter $(MCU_SERIES),f4))
+SRC_HAL += $(addprefix $(HAL_DIR)/Src/stm32$(MCU_SERIES)xx_,\
+	hal_i2s_ex.c \
+	)
+endif
+
 
 ifeq ($(CMSIS_MCU),$(filter $(CMSIS_MCU),STM32H743xx))
     HAL_SRC_C += $(addprefix $(HAL_DIR)/Src/stm32$(MCU_SERIES)xx_, hal_fdcan.c)
