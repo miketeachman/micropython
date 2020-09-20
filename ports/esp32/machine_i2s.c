@@ -3,7 +3,7 @@
  * 
  * The MIT License (MIT)
  *
- * Copyright (c) 2019 Mike Teachman
+ * Copyright (c) 2020 Mike Teachman
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,6 +31,44 @@
 #include "mphalport.h"
 #include "driver/i2s.h"
 
+//  ESP32 buffer formats for write() and readinto() methods:
+
+//  notation:
+//      mono formats:
+//          Mn_Bx_y
+//              Mn=sample number
+//              Bx_y= byte order 
+//                
+//              Example:  M0_B0_7:  first sample in buffer, least significant byte
+
+//      stereo formats:
+//          Ln_Bx_y
+//              Ln=left channel sample number
+//              Bx_y= byte order
+//          similar for Right channel
+//              Rn_Bx_y
+//
+//              Example:  R0_B24_31:  first right channel sample in buffer, most significant byte for 32 bit sample
+//
+//  samples are represented as little endian
+//
+// 16 bit mono
+//   [M0_B0_7, M0_B8_15, M1_B0_7, M1_B8_15, ...] 
+// 32 bit mono
+//   [M0_B0_7, M0_B8_15, M0_B16_23, M0_B24_31, M1_B0_7, M1_B8_15, M1_B16_23, M1_B24_31, ...]
+// 16 bit stereo
+//   [L0_B0_7, L0_B8_15, R0_B0_7, R0_B8_15, L1_B0_7, L1_B8_15, R1_B0_7, R1_B8_15, ...]
+// 32 bit stereo
+//   [L0_B0_7, L0_B8_15, L0_B16_23, L0_B24_31, R0_B0_7, R0_B8_15, R0_B16_23, R0_B24_31, 
+//    L1_B0_7, L1_B8_15, L1_B16_23, L1_B24_31, R1_B0_7, R1_B8_15, R1_B16_23, R1_B24_31, ...]
+
+
+//  ESP32 buffer formats for read_into() method:
+
+
+
+// TODO implement TVE suggestions
+
 // Notes on naming conventions:
 // 1. "id" versus "port"
 //    The MicroPython API identifies instances of a peripheral using "id", while the ESP-IDF uses "port".
@@ -42,22 +80,17 @@
 typedef struct _machine_i2s_obj_t {
     mp_obj_base_t          base;
     i2s_port_t             id;
-    i2s_comm_format_t      standard;
-    uint8_t                mode;
-    i2s_bits_per_sample_t  dataformat;
-    i2s_channel_fmt_t      channelformat;
-    int32_t                samplerate;
-    int16_t                dmacount;
-    int16_t                dmalen;
-    int32_t                apllrate;
-    int8_t                 bck;
+    int8_t                 sck;
     int8_t                 ws;
-    int8_t                 sdout;
-    int8_t                 sdin;
+    int8_t                 sd;
+    uint8_t                mode;
+    i2s_bits_per_sample_t  bits;
+    i2s_channel_fmt_t      format;
+    int32_t                rate;
     bool                   used;
 } machine_i2s_obj_t;
 
-// Static object mapping to I2S peripherals
+// Static object mapping to I2S peripherals  TODO change to root pointer? 
 //   note:  I2S implementation makes use of the following mapping between I2S peripheral and I2S object
 //      I2S peripheral 1:  machine_i2s_obj[0]
 //      I2S peripheral 2:  machine_i2s_obj[1]
@@ -65,36 +98,59 @@ STATIC machine_i2s_obj_t machine_i2s_obj[I2S_NUM_MAX] = {
         [0].used = false,
         [1].used = false };
 
+//  For 32-bit stereo, the ESP-IDF API has a channel convention of R, L channel ordering
+//  The following function takes a buffer having L,R channel ordering and swaps channels   TODO rewrite
+//  to work with the ESP-IDF ordering R, L
+//
+//  Example:
+//
+//   wav_samples[] = [L_0-7, L_8-15, L_16-23, L_24-31, R_0-7, R_8-15, R_16-23, R_24-31] = [Left channel, Right channel]           
+//   i2s_samples[] = [R_0-7, R_8-15, R_16-23, R_24-31, L_0-7, L_8-15, L_16-23, L_24-31] = [Right channel, Left channel]
+//
+//   where:
+//     L_0-7 is the least significant byte of the 32 bit sample in the Left channel 
+//     L_24-31 is the most significant byte of the 32 bit sample in the Left channel 
+//
+//   wav_samples[] =  [0x44, 0x55, 0xAB, 0x77, 0x99, 0xBB, 0x11, 0x22] = [Left channel, Right channel]           
+//   i2s_samples[] =  [0x99, 0xBB, 0x11, 0x22, 0x44, 0x55, 0xAB, 0x77] = [Right channel,  Left channel]
+//   notes:
+//       samples in wav_samples[] arranged in little endian format:  
+//           0x77 is the most significant byte of the 32-bit sample
+//           0x44 is the least significant byte of the 32-bit sample
+//              and
+//           RIGHT Channel = 0x44, 0x55, 0xAB, 0x77
+//           LEFT Channel =  0x99, 0xBB, 0x11, 0x22
+STATIC void machine_i2s_swap_32_bit_stereo_channels(mp_buffer_info_t *bufinfo) {
+    int32_t swap_sample;
+    int32_t *sample = bufinfo->buf;
+    uint32_t num_samples = bufinfo->len / 4;
+    for (uint32_t i=0; i<num_samples; i+=2) {
+        swap_sample = sample[i+1];
+        sample[i+1] = sample[i];
+        sample[i] = swap_sample;
+    }
+}
+
 STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
 
     enum {
-        ARG_bck,
+        ARG_sck,
         ARG_ws,
-        ARG_sdout,
-        ARG_sdin,
-        ARG_standard,
+        ARG_sd,
         ARG_mode,
-        ARG_dataformat,
-        ARG_channelformat,
-        ARG_samplerate,
-        ARG_dmacount,
-        ARG_dmalen,
-        ARG_apllrate,
+        ARG_bits,
+        ARG_format,
+        ARG_rate,
     };
 
     static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_bck,              MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_sck,              MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
         { MP_QSTR_ws,               MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
-        { MP_QSTR_sdout,            MP_ARG_KW_ONLY                   | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
-        { MP_QSTR_sdin,             MP_ARG_KW_ONLY                   | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
-        { MP_QSTR_standard,         MP_ARG_KW_ONLY                   | MP_ARG_INT,   {.u_int = I2S_COMM_FORMAT_I2S} },
+        { MP_QSTR_sd,               MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
         { MP_QSTR_mode,             MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_dataformat,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_channelformat,    MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_samplerate,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_dmacount,         MP_ARG_KW_ONLY                   | MP_ARG_INT,   {.u_int = 16} },
-        { MP_QSTR_dmalen,           MP_ARG_KW_ONLY                   | MP_ARG_INT,   {.u_int = 64} },
-        { MP_QSTR_apllrate,         MP_ARG_KW_ONLY                   | MP_ARG_INT,   {.u_int = 0} },
+        { MP_QSTR_bits,             MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
+        { MP_QSTR_format,           MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
+        { MP_QSTR_rate,             MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
     };
 
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -105,103 +161,56 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     //
 
     // are I2S pin assignments valid?
-    int8_t bck = args[ARG_bck].u_obj == MP_OBJ_NULL ? -1 : machine_pin_get_id(args[ARG_bck].u_obj);
+    int8_t sck = args[ARG_sck].u_obj == MP_OBJ_NULL ? -1 : machine_pin_get_id(args[ARG_sck].u_obj);
     int8_t ws = args[ARG_ws].u_obj == MP_OBJ_NULL ? -1 : machine_pin_get_id(args[ARG_ws].u_obj);
-    int8_t sdin = args[ARG_sdin].u_obj == MP_OBJ_NULL ? -1 : machine_pin_get_id(args[ARG_sdin].u_obj);
-    int8_t sdout = args[ARG_sdout].u_obj == MP_OBJ_NULL ? -1 : machine_pin_get_id(args[ARG_sdout].u_obj);
-
-    if ((sdin == -1) && (args[ARG_mode].u_int == (I2S_MODE_MASTER | I2S_MODE_RX))) {
-        mp_raise_ValueError(MP_ERROR_TEXT("sdin must be specified for RX mode"));
-    }
-
-    if ((sdout == -1) && (args[ARG_mode].u_int == (I2S_MODE_MASTER | I2S_MODE_TX))) {
-        mp_raise_ValueError(MP_ERROR_TEXT("sdout must be specified for TX mode"));
-    }
-
-    if ((sdin != -1) && (sdout != -1)) {
-        mp_raise_ValueError(MP_ERROR_TEXT("only one of sdin or sdout can be specified"));
-    }
-
-    // is Standard valid?
-    i2s_comm_format_t i2s_commformat = args[ARG_standard].u_int;
-    if ((i2s_commformat != I2S_COMM_FORMAT_I2S) &&
-        (i2s_commformat != (I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_LSB))) {
-        mp_raise_ValueError(MP_ERROR_TEXT("Standard is not valid"));
-    }
+    int8_t sd = args[ARG_sd].u_obj == MP_OBJ_NULL ? -1 : machine_pin_get_id(args[ARG_sd].u_obj);
 
     // is Mode valid?
     i2s_mode_t i2s_mode = args[ARG_mode].u_int;
     if ((i2s_mode != (I2S_MODE_MASTER | I2S_MODE_RX)) &&
         (i2s_mode != (I2S_MODE_MASTER | I2S_MODE_TX))) {
-        mp_raise_ValueError(MP_ERROR_TEXT("Only Master Rx or Master Tx Modes are supported"));
+        mp_raise_ValueError(MP_ERROR_TEXT("Modes is not valid"));
     }
 
-    // is Data Format valid?
-    i2s_bits_per_sample_t i2s_bits_per_sample = args[ARG_dataformat].u_int;
+    // is Bits valid?
+    i2s_bits_per_sample_t i2s_bits_per_sample = args[ARG_bits].u_int;
     if ((i2s_bits_per_sample != I2S_BITS_PER_SAMPLE_16BIT) &&
-        (i2s_bits_per_sample != I2S_BITS_PER_SAMPLE_24BIT) &&
         (i2s_bits_per_sample != I2S_BITS_PER_SAMPLE_32BIT)) {
-        mp_raise_ValueError(MP_ERROR_TEXT("Data Format is not valid"));
+        mp_raise_ValueError(MP_ERROR_TEXT("Bits is not valid"));
     }
 
-    // is Channel Format valid?
-    i2s_channel_fmt_t i2s_channelformat = args[ARG_channelformat].u_int;
-    if ((i2s_channelformat != I2S_CHANNEL_FMT_RIGHT_LEFT) &&
-        (i2s_channelformat != I2S_CHANNEL_FMT_ALL_RIGHT) &&
-        (i2s_channelformat != I2S_CHANNEL_FMT_ALL_LEFT) &&
-        (i2s_channelformat != I2S_CHANNEL_FMT_ONLY_RIGHT) &&
-        (i2s_channelformat != I2S_CHANNEL_FMT_ONLY_LEFT)) {
-        mp_raise_ValueError(MP_ERROR_TEXT("Channel Format is not valid"));
+    // is Format valid?
+    i2s_channel_fmt_t i2s_format = args[ARG_format].u_int;
+    if ((i2s_format != I2S_CHANNEL_FMT_RIGHT_LEFT) &&
+        (i2s_format != I2S_CHANNEL_FMT_ONLY_RIGHT) &&
+        (i2s_format != I2S_CHANNEL_FMT_ONLY_LEFT)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("Format is not valid"));
     }
 
     // is Sample Rate valid?
     // No validation done:  ESP-IDF API does not indicate a valid range for sample rate
 
-    // is DMA Buffer Count valid?
-    // ESP-IDF API code checks for buffer count in this range:  [2, 128]
-    int16_t i2s_dmacount = args[ARG_dmacount].u_int;
-    if ((i2s_dmacount < 2) || (i2s_dmacount > 128)) {
-        mp_raise_ValueError(MP_ERROR_TEXT("DMA Buffer Count is not valid.  Allowed range is [2, 128]"));
-    }
-
-    // is DMA Buffer Length valid?
-    // ESP-IDF API code checks for buffer length in this range:  [8, 1024]
-    int16_t i2s_dmalen = args[ARG_dmalen].u_int;
-    if ((i2s_dmalen < 8) || (i2s_dmalen > 1024)) {
-        mp_raise_ValueError(MP_ERROR_TEXT("DMA Buffer Length is not valid.  Allowed range is [8, 1024]"));
-    }
-
     // is APLL Rate valid?
     // No validation done:  ESP-IDF API does not indicate a valid range for APLL rate
     
-    self->bck = bck;
+    self->sck = sck;
     self->ws = ws;
-    self->sdout = sdout;
-    self->sdin = sdin;
-    self->standard = args[ARG_standard].u_int;
+    self->sd = sd;
     self->mode = args[ARG_mode].u_int;
-    self->dataformat = args[ARG_dataformat].u_int;
-    self->channelformat = args[ARG_channelformat].u_int;
-    self->samplerate = args[ARG_samplerate].u_int;
-    self->dmacount = args[ARG_dmacount].u_int;
-    self->dmalen = args[ARG_dmalen].u_int;
-    self->apllrate = args[ARG_apllrate].u_int;
+    self->bits = args[ARG_bits].u_int;
+    self->format = args[ARG_format].u_int;
+    self->rate = args[ARG_rate].u_int;
 
     i2s_config_t i2s_config;
-    i2s_config.communication_format = self->standard;
+    i2s_config.communication_format = I2S_COMM_FORMAT_I2S;
     i2s_config.mode = self->mode;
-    i2s_config.bits_per_sample = self->dataformat;
-    i2s_config.channel_format = self->channelformat;
-    i2s_config.sample_rate = self->samplerate;
+    i2s_config.bits_per_sample = self->bits;
+    i2s_config.channel_format = self->format;
+    i2s_config.sample_rate = self->rate;
     i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LOWMED; // allows simultaneous use of both I2S channels
-    i2s_config.dma_buf_count = self->dmacount;
-    i2s_config.dma_buf_len = self->dmalen;
-    if (self->apllrate != 0) {
-        i2s_config.use_apll = true;
-    } else {
-        i2s_config.use_apll = false;
-    }
-    i2s_config.fixed_mclk = self->apllrate;
+    i2s_config.dma_buf_count = 10;  // TODO
+    i2s_config.dma_buf_len = 256;  // TODO
+    i2s_config.use_apll = false;
 
     // uninstall I2S driver when changes are being made to an active I2S peripheral
     if (self->used) {
@@ -225,10 +234,16 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     }
 
     i2s_pin_config_t pin_config;
-    pin_config.bck_io_num = self->bck;
+    pin_config.bck_io_num = self->sck;
     pin_config.ws_io_num = self->ws;
-    pin_config.data_out_num = self->sdout;
-    pin_config.data_in_num = self->sdin;
+    
+    if (i2s_mode == (I2S_MODE_MASTER | I2S_MODE_RX)) {
+        pin_config.data_in_num = self->sd;
+        pin_config.data_out_num = -1;
+    } else {
+        pin_config.data_in_num = -1;
+        pin_config.data_out_num = self->sd;
+    }
 
     ret = i2s_set_pin(self->id, &pin_config);
     switch (ret) {
@@ -253,18 +268,14 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 // MicroPython bindings for I2S
 STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
     machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    mp_printf(print, "I2S(id=%u, bck=%d, ws=%d, sdout=%d, sdin=%d\n"
-            "standard=%u, mode=%u,\n"
-            "dataformat=%u, channelformat=%u,\n"
-            "samplerate=%d,\n"
-            "dmacount=%d, dmalen=%d,\n"
-            "apllrate=%d)",
-            self->id, self->bck, self->ws, self->sdout, self->sdin,
-            self->standard, self->mode,
-            self->dataformat, self->channelformat,
-            self->samplerate,
-            self->dmacount, self->dmalen,
-            self->apllrate
+    mp_printf(print, "I2S(id=%u, sck=%d, ws=%d, sd=%d\n"
+            "mode=%u,\n"
+            "bits=%u, format=%u,\n"
+            "rate=%d)",
+            self->id, self->sck, self->ws, self->sd,
+            self->mode,
+            self->bits, self->format,
+            self->rate
             );
 }
 
@@ -308,10 +319,9 @@ STATIC mp_obj_t machine_i2s_init(mp_uint_t n_pos_args, const mp_obj_t *pos_args,
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_init_obj, 1, machine_i2s_init);
 
 STATIC mp_obj_t machine_i2s_readinto(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_buf, ARG_timeout };
+    enum { ARG_buf };
     STATIC const mp_arg_t allowed_args[] = {
         { MP_QSTR_buf,                      MP_ARG_REQUIRED | MP_ARG_OBJ,  {.u_obj = mp_const_none} },
-        { MP_QSTR_timeout, MP_ARG_KW_ONLY                   | MP_ARG_INT,  {.u_int = -1} },
     };
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_pos_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(args), allowed_args, args);
@@ -329,13 +339,9 @@ STATIC mp_obj_t machine_i2s_readinto(mp_uint_t n_pos_args, const mp_obj_t *pos_a
     mp_buffer_info_t bufinfo;
     mp_get_buffer_raise(args[ARG_buf].u_obj, &bufinfo, MP_BUFFER_WRITE);
 
-    TickType_t timeout_in_ticks = portMAX_DELAY;
-    if (args[ARG_timeout].u_int != -1) {
-        timeout_in_ticks = pdMS_TO_TICKS(args[ARG_timeout].u_int);
-    }
-
     uint32_t num_bytes_read = 0;
-    esp_err_t ret = i2s_read(self->id, bufinfo.buf, bufinfo.len, &num_bytes_read, timeout_in_ticks);
+    
+    esp_err_t ret = i2s_read(self->id, bufinfo.buf, bufinfo.len, &num_bytes_read, portMAX_DELAY);
     switch (ret) {
         case ESP_OK:
             break;
@@ -347,16 +353,19 @@ STATIC mp_obj_t machine_i2s_readinto(mp_uint_t n_pos_args, const mp_obj_t *pos_a
             mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S read:  Undocumented error")); 
             break;
     }
+    
+    if ((self->bits == 32) && (self->format == I2S_CHANNEL_FMT_RIGHT_LEFT)) {
+        machine_i2s_swap_32_bit_stereo_channels(&bufinfo);
+    }
 
     return mp_obj_new_int(num_bytes_read);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_readinto_obj, 2, machine_i2s_readinto);
 
 STATIC mp_obj_t machine_i2s_write(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_buf, ARG_timeout };
+    enum { ARG_buf };
     STATIC const mp_arg_t allowed_args[] = {
         { MP_QSTR_buf,                      MP_ARG_REQUIRED | MP_ARG_OBJ,  {.u_obj = mp_const_none} },
-        { MP_QSTR_timeout, MP_ARG_KW_ONLY                   | MP_ARG_INT,  {.u_int = -1} },
     };
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_pos_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(args), allowed_args, args);
@@ -372,15 +381,14 @@ STATIC mp_obj_t machine_i2s_write(mp_uint_t n_pos_args, const mp_obj_t *pos_args
     }
     
     mp_buffer_info_t bufinfo;
-    mp_get_buffer_raise(args[ARG_buf].u_obj, &bufinfo, MP_BUFFER_WRITE);
-
-    TickType_t timeout_in_ticks = portMAX_DELAY;
-    if (args[ARG_timeout].u_int != -1) {
-        timeout_in_ticks = pdMS_TO_TICKS(args[ARG_timeout].u_int);
+    mp_get_buffer_raise(args[ARG_buf].u_obj, &bufinfo, MP_BUFFER_WRITE);  // TODO  MP_BUFFER_READ ?
+    
+    if ((self->bits == 32) && (self->format == I2S_CHANNEL_FMT_RIGHT_LEFT)) {
+        machine_i2s_swap_32_bit_stereo_channels(&bufinfo);
     }
 
     uint32_t num_bytes_written = 0;
-    esp_err_t ret = i2s_write(self->id, bufinfo.buf, bufinfo.len, &num_bytes_written, timeout_in_ticks);
+    esp_err_t ret = i2s_write(self->id, bufinfo.buf, bufinfo.len, &num_bytes_written, portMAX_DELAY);
     switch (ret) {
         case ESP_OK:
             break;
@@ -415,19 +423,10 @@ STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     // Constants
     { MP_ROM_QSTR(MP_QSTR_NUM0),            MP_ROM_INT(I2S_NUM_0) },
     { MP_ROM_QSTR(MP_QSTR_NUM1),            MP_ROM_INT(I2S_NUM_1) },
-    { MP_ROM_QSTR(MP_QSTR_PHILIPS),         MP_ROM_INT(I2S_COMM_FORMAT_I2S) },
-    { MP_ROM_QSTR(MP_QSTR_LSB),             MP_ROM_INT(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_LSB) },
-    // note:  ESP-IDF does not implement the MSB standard (even though the Macro I2S_COMM_FORMAT_I2S_MSB is defined)
-    { MP_ROM_QSTR(MP_QSTR_MASTER_RX),       MP_ROM_INT(I2S_MODE_MASTER | I2S_MODE_RX) },
-    { MP_ROM_QSTR(MP_QSTR_MASTER_TX),       MP_ROM_INT(I2S_MODE_MASTER | I2S_MODE_TX) },
-    { MP_ROM_QSTR(MP_QSTR_B16),             MP_ROM_INT(I2S_BITS_PER_SAMPLE_16BIT) },
-    { MP_ROM_QSTR(MP_QSTR_B24),             MP_ROM_INT(I2S_BITS_PER_SAMPLE_24BIT) },
-    { MP_ROM_QSTR(MP_QSTR_B32),             MP_ROM_INT(I2S_BITS_PER_SAMPLE_32BIT) },
-    { MP_ROM_QSTR(MP_QSTR_RIGHT_LEFT),      MP_ROM_INT(I2S_CHANNEL_FMT_RIGHT_LEFT) },
-    { MP_ROM_QSTR(MP_QSTR_ALL_RIGHT),       MP_ROM_INT(I2S_CHANNEL_FMT_ALL_RIGHT) },
-    { MP_ROM_QSTR(MP_QSTR_ALL_LEFT),        MP_ROM_INT(I2S_CHANNEL_FMT_ALL_LEFT) },
-    { MP_ROM_QSTR(MP_QSTR_ONLY_RIGHT),      MP_ROM_INT(I2S_CHANNEL_FMT_ONLY_RIGHT) },
-    { MP_ROM_QSTR(MP_QSTR_ONLY_LEFT),       MP_ROM_INT(I2S_CHANNEL_FMT_ONLY_LEFT) },
+    { MP_ROM_QSTR(MP_QSTR_RX),              MP_ROM_INT(I2S_MODE_MASTER | I2S_MODE_RX) },
+    { MP_ROM_QSTR(MP_QSTR_TX),              MP_ROM_INT(I2S_MODE_MASTER | I2S_MODE_TX) },
+    { MP_ROM_QSTR(MP_QSTR_STEREO),          MP_ROM_INT(I2S_CHANNEL_FMT_RIGHT_LEFT) },
+    { MP_ROM_QSTR(MP_QSTR_MONO),            MP_ROM_INT(I2S_CHANNEL_FMT_ONLY_LEFT) },
 };
 MP_DEFINE_CONST_DICT(machine_i2s_locals_dict, machine_i2s_locals_dict_table);
 
