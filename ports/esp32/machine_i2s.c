@@ -393,11 +393,11 @@ STATIC mp_obj_t machine_i2s_write(mp_uint_t n_pos_args, const mp_obj_t *pos_args
         case ESP_OK:
             break;
         case ESP_ERR_INVALID_ARG:
-            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S write:  Parameter error"));
+            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S write: Parameter error"));
             break;
         default:
             // this error not documented in ESP-IDF
-            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S write:  Undocumented error")); 
+            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S write: Undocumented error")); 
             break;
     }
     
