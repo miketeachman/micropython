@@ -151,7 +151,7 @@ extern struct _spi_bdev_t spi_bdev2;
 #define MICROPY_HW_CAN1_RX          (pyb_pin_X9)
 
 // I2S busses
-#define MICROPY_HW_ENABLE_I2S1      (0)
+#define MICROPY_HW_ENABLE_I2S1      (1) // TODO fix compiler errors to allow this
 #define MICROPY_HW_ENABLE_I2S2      (1)
 #define MICROPY_HW_ENABLE_I2S3      (0)
 

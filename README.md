@@ -1,17 +1,34 @@
-#The MicroPython project
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/micropython/micropython/master/logo/upython-with-micro.jpg" alt="MicroPython Logo"/>
-</p>
-
-This is the MicroPython project, which aims to put an implementation
-of Python 3.x on microcontrollers and small embedded systems.
-You can find the official website at [micropython.org](http://www.micropython.org).
-
-#An I2S Development Branch for MicroPython
+# I2S Development Branch for MicroPython
 <p align="center">
   <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/I2S_Timing.svg/500px-I2S_Timing.svg.png" alt="I2S Logo"/>
 </p>
+
+This branch is being used to develop the I2S feature on the following MicroPython Ports:
+* STM32
+* ESP32
+
+The ambition is to turn this work into a Pull Request that will be accepted by the MicroPython maintainers.
+
+
+# Roadmap
+
+Master only
+Philips Protocol only
+
+
+
+buffer, blocking
+buffer, non-blocking with callback
+
+-- pull release for PyBoards, ESP32
+
+buffer, non-blocking with stream protocol
+
+-- pull release for PyBoards, ESP32
+
+user provided buffers
+
+-- stream 
 
 
 #### How to contribute

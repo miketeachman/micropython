@@ -111,18 +111,18 @@ static const DMA_InitTypeDef dma_init_struct_i2s = {
     #elif defined(STM32H7) || defined(STM32L0) || defined(STM32L4)
     .Request = 0,
     #endif
-    .Direction = 0,
+    .Direction = DMA_MEMORY_TO_PERIPH,
     .PeriphInc = DMA_PINC_DISABLE,
     .MemInc = DMA_MINC_ENABLE,
     .PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD,
     .MemDataAlignment = DMA_MDATAALIGN_HALFWORD,
-    .Mode = DMA_NORMAL,
+    .Mode = DMA_CIRCULAR,//  ,DMA_NORMAL
     .Priority = DMA_PRIORITY_LOW,
     #if defined(STM32F4) || defined(STM32F7) || defined(STM32H7)
     .FIFOMode = DMA_FIFOMODE_DISABLE,
-    .FIFOThreshold = DMA_FIFO_THRESHOLD_FULL,
-    .MemBurst = DMA_MBURST_SINGLE,
-    .PeriphBurst = DMA_PBURST_SINGLE
+    //.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL,
+    //.MemBurst = DMA_MBURST_SINGLE,
+    //.PeriphBurst = DMA_PBURST_SINGLE
     #endif
 };
 
@@ -291,6 +291,7 @@ const dma_descr_t dma_SDMMC_2 = { DMA2_Stream0, DMA_CHANNEL_11, dma_id_8,  &dma_
 const dma_descr_t dma_DCMI_0 = { DMA2_Stream1, DMA_CHANNEL_1, dma_id_9,  &dma_init_struct_dcmi };
 #endif
 const dma_descr_t dma_SPI_1_RX = { DMA2_Stream2, DMA_CHANNEL_3, dma_id_10,  &dma_init_struct_spi_i2c };
+const dma_descr_t dma_I2S_1_RX = { DMA2_Stream2, DMA_CHANNEL_3, dma_id_10,  &dma_init_struct_i2s };
 const dma_descr_t dma_SPI_5_RX = { DMA2_Stream3, DMA_CHANNEL_2, dma_id_11,  &dma_init_struct_spi_i2c };
 #if ENABLE_SDIO
 const dma_descr_t dma_SDIO_0 = { DMA2_Stream3, DMA_CHANNEL_4, dma_id_11,  &dma_init_struct_sdio };
@@ -300,6 +301,7 @@ const dma_descr_t dma_SPI_5_TX = { DMA2_Stream4, DMA_CHANNEL_2, dma_id_12,  &dma
 const dma_descr_t dma_SPI_4_TX = { DMA2_Stream4, DMA_CHANNEL_5, dma_id_12,  &dma_init_struct_spi_i2c };
 const dma_descr_t dma_SPI_6_TX = { DMA2_Stream5, DMA_CHANNEL_1, dma_id_13,  &dma_init_struct_spi_i2c };
 const dma_descr_t dma_SPI_1_TX = { DMA2_Stream5, DMA_CHANNEL_3, dma_id_13,  &dma_init_struct_spi_i2c };
+const dma_descr_t dma_I2S_1_TX = { DMA2_Stream5, DMA_CHANNEL_3, dma_id_13,  &dma_init_struct_i2s };
 // #if defined(STM32F7) && defined(SDMMC2) && ENABLE_SDIO
 // const dma_descr_t dma_SDMMC_2 = { DMA2_Stream5, DMA_CHANNEL_11, dma_id_13,  &dma_init_struct_sdio };
 // #endif
