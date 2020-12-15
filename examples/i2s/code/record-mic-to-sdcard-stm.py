@@ -4,6 +4,12 @@ import uos
 from machine import I2S
 from machine import Pin
 
+# TODO - correct example taking into account that Mics should have 32 SCK cycles per channel 
+# Use itools or new built in functionality?
+# perhaps standardize on putting out 32 SCK cycles/word, and then the bits argument indicates how many samples 
+# you want to store.  TBD....
+# "There must be 64 SCK cycles in each WS stereo frame, or 32 SCK cycles per data-word"
+
 num_channels = {I2S.MONO:1, I2S.STEREO:2}
 
 def i2s_callback(s):

@@ -24,7 +24,8 @@ from machine import I2S
 from machine import Pin
 
 def i2s_callback(s):
-    print('callback worked')
+    #print('callback worked')
+    pass
 
 # for the Pyboard D hardware enable external 3.3v output 
 if uos.uname().machine.find('PYBD') == 0:
@@ -32,28 +33,24 @@ if uos.uname().machine.find('PYBD') == 0:
     uos.mount(pyb.SDCard(), '/sd')
 
 #======= USER CONFIGURATION =======
-WAV_FILE = 'music-16k-16bits-stereo.wav'
-WAV_SAMPLE_SIZE_IN_BITS = 16
-FORMAT = I2S.STEREO
+WAV_FILE = 'music-16k-32bits-mono.wav'
+WAV_SAMPLE_SIZE_IN_BITS = 32
+FORMAT = I2S.MONO
 SAMPLE_RATE_IN_HZ = 16000
 #======= USER CONFIGURATION =======
 
-#     SCK -   A5/W6/X6,   B3/W29    (SPI1 SCK)
-#     WS -    A4/W7/X5,   A15/W16   (SPI1 NSS)
-#     SD -    A7/W14/X8,  B5/W46/Y4 (SPI1 MOSI)
+#     SCK - W29 (SPI1 SCK)
+#     WS -  W16 (SPI1 NSS)
+#     SD -  Y4  (SPI1 MOSI)
 
-#     SCK -   Y6  (SPI2 SCK)
-#     WS -    Y5  (SPI2 NSS)
-#     SD -    Y8  (SPI2 MOSI)
+#     SCK - Y6  (SPI2 SCK)
+#     WS -  Y5  (SPI2 NSS)
+#     SD -  Y8  (SPI2 MOSI)
 
-sck_pin = Pin('Y6') 
-ws_pin = Pin('Y5')  
-sd_pin = Pin('Y8')
-'''
-sck_pin = Pin('B3') 
-ws_pin = Pin('A15')  
-sd_pin = Pin('B5')
-'''
+sck_pin = Pin('W29') 
+ws_pin = Pin('W16')  
+sd_pin = Pin('Y4')
+
 buf_1 = bytearray(1024)
 buf_2 = bytearray(1024)
 buf_3 = bytearray(1024)
@@ -63,7 +60,7 @@ buf_5 = bytearray(1024)
 # TODO  define with memoryview?  see what happens with allocation in loop below.  GC?
 
 audio_out = I2S(
-    2, # TODO add constant for this
+    1, # TODO add constant for this
     sck=sck_pin, ws=ws_pin, sd=sd_pin, 
     mode=I2S.TX,
     bits=WAV_SAMPLE_SIZE_IN_BITS,

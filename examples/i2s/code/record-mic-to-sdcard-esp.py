@@ -29,6 +29,8 @@ LEFT = 0
 RIGHT = 1
 LEFT_RIGHT = 2
 
+# TODO - simplify by only recording the LEFT mic channel for MONO recordings
+
 num_channels = {LEFT:1, RIGHT:1, LEFT_RIGHT:2}
 channel_map = {LEFT:i2stools.LEFT, RIGHT:i2stools.RIGHT, LEFT_RIGHT:i2stools.LEFT_RIGHT}
 bit_map = {16:i2stools.B16, 32:i2stools.B32}
@@ -36,7 +38,7 @@ bit_map = {16:i2stools.B16, 32:i2stools.B32}
 #======= USER CONFIGURATION =======
 RECORD_TIME_IN_SECONDS = 10
 SAMPLE_RATE_IN_HZ = 16000
-MIC_CHANNEL = LEFT_RIGHT
+MIC_CHANNEL = RIGHT
 WAV_SAMPLE_SIZE_IN_BITS = 16
 #======= USER CONFIGURATION =======
 

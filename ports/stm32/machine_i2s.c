@@ -81,13 +81,15 @@
 // SPI3 RX:     DMA1_Stream0.CHANNEL_0 or DMA1_Stream2.CHANNEL_0
 // SPI3 TX:     DMA1_Stream5.CHANNEL_0 or DMA1_Stream7.CHANNEL_0
 
+#define MEASURE_COPY_PERFORMANCE 1
+
 #define SIZEOF_DMA_BUFFER_IN_BYTES (256)  // TODO what is the minimal size for acceptable performance
 #define QUEUE_CAPACITY (10)
 
 typedef enum {
     TOP_HALF    = 0,
     BOTTOM_HALF = 1,
-} machine_i2s_dma_buffer_ping_pong_t;
+} machine_i2s_dma_buffer_ping_pong_t;  // TODO crazy long name
 
 typedef enum {
     MONO   = 0,
@@ -124,14 +126,6 @@ typedef struct _machine_i2s_obj_t {
     int32_t                 rate;
     bool                    used;
 } machine_i2s_obj_t;
-
-// pins are System Clock, Word Select, Serial Data
-typedef enum { 
-    SCK, 
-    WS, 
-    SD, 
-    NUM_PINS 
-} machine_i2s_pin_t; 
 
 // TODO:  is this RAM usage unacceptably massive in uPy???  check sizeof() machine_i2s_obj_t versus the norms ....
 // Static object mapping to I2S peripherals
@@ -278,7 +272,7 @@ STATIC void machine_i2s_empty_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffe
     mp_get_buffer(self->active_buffer, &bufinfo, MP_BUFFER_WRITE);
 
     if ((self->format == MONO) && (self->bits == I2S_DATAFORMAT_16B)) {
-        uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/4;
+        uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/4;  // TODO - really confusing -- fix
         uint16_t *dma_buffer_p = (uint16_t *)&self->dma_buffer[dma_buffer_index];
 
         uint8_t *temp = (uint8_t *)bufinfo.buf;
@@ -288,7 +282,7 @@ STATIC void machine_i2s_empty_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffe
         for (uint32_t i=0; i<samples_to_copy; i++) {
             active_buffer_p[i] = dma_buffer_p[i*2]; 
         }
-        self->active_buffer_index += SIZEOF_DMA_BUFFER_IN_BYTES/2/2;
+        self->active_buffer_index += SIZEOF_DMA_BUFFER_IN_BYTES/2/2;  // TODO - really confusing -- fix
         
     } else if ((self->format == MONO) && (self->bits == I2S_DATAFORMAT_32B)) {
         uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/8;
@@ -362,7 +356,7 @@ STATIC void machine_i2s_feed_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffer
     // (STM32 HAL API has a stereo I2S implementation, but not mono)
     
     if ((self->format == MONO) && (self->bits == I2S_DATAFORMAT_16B)) {
-        uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/4;
+        uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/4; // TODO - really confusing -- fix
         uint16_t *dma_buffer_p = (uint16_t *)&self->dma_buffer[dma_buffer_index];
 
         uint8_t *temp = (uint8_t *)bufinfo.buf;
@@ -373,7 +367,7 @@ STATIC void machine_i2s_feed_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffer
             dma_buffer_p[i*2] = active_buffer_p[i]; 
             dma_buffer_p[i*2+1] = active_buffer_p[i]; 
         }
-        self->active_buffer_index += SIZEOF_DMA_BUFFER_IN_BYTES/2/2;
+        self->active_buffer_index += SIZEOF_DMA_BUFFER_IN_BYTES/2/2;  // TODO - really confusing -- fix
         
     } else if ((self->format == MONO) && (self->bits == I2S_DATAFORMAT_32B)) {
         uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/8;
@@ -900,7 +894,7 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     mp_arg_check_num(n_pos_args, n_kw_args, 1, MP_OBJ_FUN_ARGS_MAX, true);
 
     machine_i2s_obj_t *self;
-
+    
     // note: it is safe to assume that the arg pointer below references a positional argument because the arg check above
     //       guarantees that at least one positional argument has been provided
     uint8_t i2s_id = mp_obj_get_int(args[0]);  // TODO i2s_id has values 1,2,3 for STM32 ...different than ESP32 e.g.  0,1
@@ -1112,6 +1106,58 @@ STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_i2s_deinit_obj, machine_i2s_deinit);
 
+
+#if MEASURE_COPY_PERFORMANCE
+STATIC mp_obj_t machine_i2s_copytest(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_bufsource, ARG_bufdest, ARG_option };
+    STATIC const mp_arg_t allowed_args[] = {
+        { MP_QSTR_bufsource, MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,  {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_bufdest,   MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,  {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_option,    MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,  {.u_int = 1} },
+    };
+    
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_pos_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(args), allowed_args, args);
+    
+    mp_buffer_info_t bufsource;
+    mp_get_buffer_raise(args[ARG_bufsource].u_obj, &bufsource, MP_BUFFER_READ);
+    
+    mp_buffer_info_t bufdest;
+    mp_get_buffer_raise(args[ARG_bufdest].u_obj, &bufdest, MP_BUFFER_WRITE);
+    
+    uint16_t option = args[ARG_option].u_int;
+    uint32_t t0 = 0;
+    uint32_t t1 = 0;
+        
+    if (option == 1) {
+        t0 = mp_hal_ticks_us();
+        memcpy(bufdest.buf,
+               bufsource.buf, 
+               bufsource.len);
+        t1 = mp_hal_ticks_us();
+    } else if (option == 2) {
+        t0 = mp_hal_ticks_us();
+        for (uint32_t i=0; i<bufsource.len; i++) {
+            ((uint8_t *)bufdest.buf)[i] = ((uint8_t *)bufsource.buf)[i]; 
+        }
+        t1 = mp_hal_ticks_us();
+    } else if (option == 3) {
+        t0 = mp_hal_ticks_us();
+        uint8_t *dest_ptr = (uint8_t *)bufdest.buf;
+        uint8_t *source_ptr = (uint8_t *)bufsource.buf;
+        for (uint32_t i=0; i<bufsource.len; i++) {
+            *dest_ptr++ = *source_ptr++; 
+        }
+        t1 = mp_hal_ticks_us();
+    } else {
+        mp_raise_ValueError(MP_ERROR_TEXT("Invalid copy option"));
+    }
+    
+    return mp_obj_new_int_from_uint(t1-t0);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_copytest_obj, 1, machine_i2s_copytest);
+#endif
+
 STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     // Methods
     { MP_ROM_QSTR(MP_QSTR_init),            MP_ROM_PTR(&machine_i2s_init_obj) },
@@ -1119,6 +1165,9 @@ STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_putbuffer),       MP_ROM_PTR(&machine_i2s_putbuffer_obj) },
     { MP_ROM_QSTR(MP_QSTR_start),           MP_ROM_PTR(&machine_i2s_start_obj) },
     { MP_ROM_QSTR(MP_QSTR_deinit),          MP_ROM_PTR(&machine_i2s_deinit_obj) },
+#if MEASURE_COPY_PERFORMANCE
+    { MP_ROM_QSTR(MP_QSTR_copytest),       MP_ROM_PTR(&machine_i2s_copytest_obj) },
+#endif     
     
     // TODO add separate callback() method to configure a callback?  research uPy conventions
     

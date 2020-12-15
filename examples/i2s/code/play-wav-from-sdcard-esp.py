@@ -21,30 +21,39 @@ import uos
 from machine import Pin
 from machine import SDCard
 from machine import I2S
+import time
 
-MONO = 0
-STEREO = 1
-
-format_map = {MONO:I2S.MONO, STEREO:I2S.STEREO}
+def i2s_callback(s):
+    print('callback worked')
 
 #======= USER CONFIGURATION =======
+WAV_FILE = 'music-16k-32bits-mono.wav'
+WAV_SAMPLE_SIZE_IN_BITS = 32
+FORMAT = I2S.MONO
 SAMPLE_RATE_IN_HZ = 16000
-FORMAT = STEREO
-WAV_SAMPLE_SIZE_IN_BITS = 16
-WAV_FILE = "music-16k-16bits-stereo.wav"
 #======= USER CONFIGURATION =======
 
 sck_pin = Pin(33) 
 ws_pin = Pin(25)  
 sd_pin = Pin(32)
 
+buf_1 = bytearray(1024)
+buf_2 = bytearray(1024)
+buf_3 = bytearray(1024)
+buf_4 = bytearray(1024)
+buf_5 = bytearray(1024)
+
+# TODO  define with memoryview?  see what happens with allocation in loop below.  GC?
+
 audio_out = I2S(
-    I2S.NUM0, 
+    I2S.NUM0,
     sck=sck_pin, ws=ws_pin, sd=sd_pin, 
     mode=I2S.TX,
-    bits=WAV_SAMPLE_SIZE_IN_BITS, 
-    format=format_map[FORMAT],
-    rate=SAMPLE_RATE_IN_HZ)
+    bits=WAV_SAMPLE_SIZE_IN_BITS,
+    format=FORMAT,
+    rate=SAMPLE_RATE_IN_HZ,
+    buffers = [buf_1, buf_2, buf_3, buf_4, buf_5],
+    callback=i2s_callback)
 
 # configure SD card
 #   slot=2 configures SD card to use the SPI3 controller (VSPI), DMA channel = 2
@@ -62,21 +71,25 @@ pos = wav.seek(44)
 wav_samples = bytearray(4096)
 wav_samples_mv = memoryview(wav_samples)
 
-print('Starting')
+isStarted = False
+
 # continuously read audio samples from the WAV file 
 # and write them to an I2S DAC
 while True:
     try:
-        num_read = wav.readinto(wav_samples_mv)
-        num_written = 0
-        # end of WAV file?
-        if num_read == 0:
-            # advance to first byte of Data section
-            pos = wav.seek(44) 
-        else:
-            # loop until all samples are written to the I2S peripheral
-            while num_written < num_read:
-                num_written += audio_out.write(wav_samples_mv[num_written:num_read])
+        buffer = audio_out.getbuffer()
+        if buffer != None:
+            num_read = wav.readinto(buffer)
+            #print(num_read)
+            num_written = audio_out.putbuffer(buffer)
+            if isStarted == False:
+                audio_out.start()
+                isStarted = True
+            # end of WAV file?
+            if num_read == 0:
+                # advance to first byte of Data section
+                pos = wav.seek(44) 
+                    
     except (KeyboardInterrupt, Exception) as e:
         print('caught exception {} {}'.format(type(e).__name__, e))
         break
