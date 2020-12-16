@@ -121,6 +121,7 @@ typedef struct _machine_i2s_obj_t {
     int32_t                rate;
     bool                   used;
     volatile TaskHandle_t  client_task_handle;
+    xQueueHandle           i2s_event_queue;
 } machine_i2s_obj_t;
 
 // Static object mapping to I2S peripherals  TODO change to root pointer? 
@@ -131,7 +132,7 @@ STATIC machine_i2s_obj_t machine_i2s_obj[I2S_NUM_MAX] = {
         [0].used = false,
         [1].used = false };
 
-xQueueHandle i2s_event_queue; // TODO for each instance of I2S?
+ // TODO for each instance of I2S?
 
 //  For 32-bit stereo, the ESP-IDF API has a channel convention of R, L channel ordering
 //  The following function takes a buffer having L,R channel ordering and swaps channels   
@@ -166,10 +167,6 @@ STATIC void machine_i2s_swap_32_bit_stereo_channels(mp_buffer_info_t *bufinfo) {
         sample[i] = swap_sample;
     }
 }
-
-
-
-
 
 //
 //  circular queue containing references to MicroPython objects (e.g. bytearray) that hold audio samples
@@ -227,14 +224,92 @@ STATIC bool isFull(machine_i2s_queue_t *queue) {
     return (bool)(queue->size == QUEUE_CAPACITY);
 }
 
-// Simplying assumptions:
-//   - size of sample buffers is an integer multiple of dma buffer size
-//   -  TODO  note:  size of 1/2 dma buffer needs to be a multiple of 8 bytes  (so 1/2 of buffer always
-//      contains integer number of complete stereo frames @ 32 bits/sample)
+
+STATIC void machine_i2s_empty_dma(machine_i2s_obj_t *self) {
+    bool dmaEmpty = false;
+    
+    // loop until:
+    // 1. DMA is empty (no more audio samples available)
+    // 2. idle queue is empty (no space to store incoming audio samples)
+    while (dmaEmpty == false) {
+        // is a sample buffer actively being filled?
+        // if not try to pull one from the active queue
+        if (self->active_buffer == NULL) {  // TODO rename active_buffer ?  
+            // try to get a new sample buffer from the idle queue
+            if (!isEmpty(&self->idle_queue)) {
+                //printf("got buffer from Idle queue\n");
+                mp_obj_t sample_buffer = dequeue(&self->idle_queue);  // TODO integrate isEmpty() into dequeue() ?
+                self->active_buffer = sample_buffer;
+                self->active_buffer_index = 0;
+                //printf("Here 1\n");
+            } else {
+                // idle queue empty, no buffers available to receive samples from DMA 
+                // TODO - this is an Overflow situation.   Need to handle this.
+                // Flag Overflow with a callback ?
+
+                return;
+            }
+        }
+    
+        //printf("Here 2\n");
+
+        
+        mp_buffer_info_t bufinfo;
+        mp_get_buffer(self->active_buffer, &bufinfo, MP_BUFFER_WRITE);
+
+        uint8_t *active_buffer_p = &((uint8_t *)bufinfo.buf)[self->active_buffer_index];
+        uint32_t num_bytes_read = 0;
+        
+        //printf("calling I2S read()\n");
+        esp_err_t ret = i2s_read(self->id, active_buffer_p, SIZEOF_DMA_BUFFER_IN_BYTES, &num_bytes_read, 0);
+        switch (ret) {
+            case ESP_OK:
+                break;
+            case ESP_ERR_INVALID_ARG:
+                mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S read:  Parameter error"));
+                break;
+            default:
+                // this error not documented in ESP-IDF
+                mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S read:  Undocumented error")); 
+                break;
+        }
+        //printf("num_bytes_read = %d\n", num_bytes_read);
+        
+        if ((self->bits == I2S_BITS_PER_SAMPLE_32BIT) && (self->format == I2S_CHANNEL_FMT_RIGHT_LEFT)) {
+            machine_i2s_swap_32_bit_stereo_channels(&bufinfo);
+        }
+        
+        self->active_buffer_index += num_bytes_read;
+        
+        // TODO:  test that SIZEOF_DMA_BUFFER_IN_BYTES were read, or zero.  this is by design.  e.g.  buffers must be 
+        // sized at an integer multiple of SIZEOF_DMA_BUFFER_IN_BYTES.  So, either SIZEOF_DMA_BUFFER_IN_BYTES or 0 bytes
+        // are read from DMA
+        
+        if (num_bytes_read == 0) {
+            dmaEmpty = true;
+        }
+        
+        // has active buffer been filled?
+        if (self->active_buffer_index >= bufinfo.len) {
+            // push buffer to active queue
+            enqueue(&self->active_queue, self->active_buffer);
+            self->active_buffer = NULL;
+    #if 0        
+            i2s_handle_mp_callback(self);  // TODO "handle" <-- get better word
+    #endif        
+        }
+    }
+}
+
+
+
+
 STATIC void machine_i2s_feed_dma(machine_i2s_obj_t *self) {
-    // loop until all DMA buffers allocated for I2S are full 
     bool dmaFull = false;
     
+    // loop until:
+    // 1. DMA is full (no space in DMA to write incoming audio samples)
+    // 2. active queue is empty (no more audio samples to write)
     while (dmaFull == false) {
         mp_buffer_info_t bufinfo;
         
@@ -254,10 +329,10 @@ STATIC void machine_i2s_feed_dma(machine_i2s_obj_t *self) {
                 }
             } else {
                 // active queue empty, no samples to transmit
-                // TODO (?) fill dma buffer with zeros as there was no sample data to fill it
-                // this would produce silence audio when no more sample data is available
-                //printf("End feed_dma() Queue empty\n");
-                //printf("QE\n");
+                // TODO this is an Underflow situation.   Need to handle this.
+                // Option:  fill dma buffer with zeros as there was no sample data to fill it
+                // this would produce silence when no more sample data is availabl
+                // Flag Underflow with a callback ?
                 return;
             }
         }
@@ -309,17 +384,18 @@ static void i2s_client_task(void *self_in) {
     i2s_event_t i2s_event;
     
     for(;;) {
-        if(xQueueReceive(i2s_event_queue, &i2s_event, portMAX_DELAY)) {
+        if(xQueueReceive(self->i2s_event_queue, &i2s_event, portMAX_DELAY)) {
             switch(i2s_event.type) {
                 case I2S_EVENT_DMA_ERROR:
                     printf("I2S_EVENT_DMA_ERROR\n");
                     break;
                 case I2S_EVENT_TX_DONE:
-                    // getting here means that at least one DMA buffer is now free
+                    // getting here means that at least one DMA buffer is now empty
                     machine_i2s_feed_dma(self);
                     break;
                 case I2S_EVENT_RX_DONE:
-                    printf("I2S_EVENT_RX_DONE\n");
+                    // getting here means that at least one DMA buffer is now full
+                    machine_i2s_empty_dma(self);
                     break;
                 default:
                     printf("BOGUS!\n");
@@ -452,7 +528,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     i2s_config.channel_format = self->format;
     i2s_config.sample_rate = self->rate;
     i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LOWMED; // allows simultaneous use of both I2S channels
-    i2s_config.dma_buf_count = 10;
+    i2s_config.dma_buf_count = 10;  // TODO 
     i2s_config.dma_buf_len = dma_buf_len;
     i2s_config.use_apll = false;
 
@@ -461,7 +537,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         i2s_driver_uninstall(self->id);
     }
 
-    esp_err_t ret = i2s_driver_install(self->id, &i2s_config, 1, &i2s_event_queue);  // TODO queue should be per instance
+    esp_err_t ret = i2s_driver_install(self->id, &i2s_config, 1, &self->i2s_event_queue);  // TODO queue should be per instance
     switch (ret) {
         case ESP_OK:
             break;
@@ -507,10 +583,10 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     self->used = true;
     
+    // TODO map task to I2S instance
     if (xTaskCreatePinnedToCore(i2s_client_task, "i2s", I2S_TASK_STACK_SIZE, self, I2S_TASK_PRIORITY, (TaskHandle_t *)&self->client_task_handle, MP_TASK_COREID) != pdPASS) {
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("failed to create I2S task"));
     }
-
 }
 
 /******************************************************************************/
@@ -597,7 +673,6 @@ STATIC mp_obj_t machine_i2s_getbuffer(mp_obj_t self_in) {
         if (isEmpty(&self->active_queue)) {
             return mp_const_none;
         } else {
-
             mp_obj_t buffer = dequeue(&self->active_queue);
             return buffer;  
         }
@@ -631,7 +706,7 @@ STATIC mp_obj_t machine_i2s_putbuffer(mp_uint_t n_pos_args, const mp_obj_t *pos_
     mp_buffer_info_t bufinfo;
     mp_get_buffer(args[ARG_buf].u_obj, &bufinfo, MP_BUFFER_WRITE);
     
-    // For TX mode, add to active queue. For RX mode, add to inactive queue 
+    // For TX mode, add to active queue. For RX mode, add to idle queue 
     if (self->mode == (I2S_MODE_MASTER | I2S_MODE_TX)) {
         // add buffer to queue 
         // TODO change way of doing this ... try to add with enqueue(), then test for true/false ...false = queue is full... can then 
@@ -639,15 +714,13 @@ STATIC mp_obj_t machine_i2s_putbuffer(mp_uint_t n_pos_args, const mp_obj_t *pos_
         if (isFull(&self->active_queue)) {
             mp_raise_ValueError(MP_ERROR_TEXT("Nogo - active queue is friggen full - end of the road bud"));
         }
-        
-        //printf("PB() AQ: ");
         enqueue(&self->active_queue, args[ARG_buf].u_obj);
     } else { // RX
         // add buffer to queue 
         // TODO change way of doing this ... try to add with enqueue(), then test for true/false ...false = queue is full... can then 
         // eliminate isFull() routine
         if (isFull(&self->idle_queue)) {
-            mp_raise_ValueError(MP_ERROR_TEXT("Nogo - inactive queue is friggen full - end of the road bud"));
+            mp_raise_ValueError(MP_ERROR_TEXT("Nogo - idle queue is friggen full - end of the road bud"));
         }
         
         // TODO likely memset the buffer to all 0s ?
@@ -769,6 +842,8 @@ STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
     machine_i2s_obj_t *self = self_in;
     i2s_driver_uninstall(self->id);
     self->used = false;
+    
+    // TODO kill Task for this I2S instance
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_i2s_deinit_obj, machine_i2s_deinit);
