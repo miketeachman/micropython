@@ -29,6 +29,10 @@ class Stream:
     async def read(self, n):
         yield core._io_queue.queue_read(self.s)
         return self.s.read(n)
+    
+    async def readinto(self, buf):
+        yield core._io_queue.queue_read(self.s)
+        return self.s.readinto(buf)
 
     async def readexactly(self, n):
         r = b""
