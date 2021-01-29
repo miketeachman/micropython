@@ -5,7 +5,7 @@
  *
  * Copyright (c) 2013, 2014 Damien P. George
  * Copyright (c) 2015 Bryan Morrissey
- * Copyright (c) 2020 Mike Teachman
+ * Copyright (c) 2021 Mike Teachman
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,6 +28,11 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <assert.h>
 #include <errno.h>
 #include "py/nlr.h"
 #include "py/runtime.h"
@@ -35,6 +40,7 @@
 #include "py/objstr.h"
 #include "py/objlist.h"
 #include "py/mphal.h"
+#include "py/stream.h"
 #include "irq.h"
 #include "pin.h"
 #include "genhdr/pins.h"
@@ -54,6 +60,37 @@
 // - call back
 // - use of STM32 HAL API
 // - ?
+
+//  STM32 buffer formats for write() and readinto() methods:
+// ****** TODO **** update for STM32
+//  notation:
+//      mono formats:
+//          Mn_Bx_y
+//              Mn=sample number
+//              Bx_y= byte order 
+//                
+//              Example:  M0_B0_7:  first sample in buffer, least significant byte
+
+//      stereo formats:
+//          Ln_Bx_y
+//              Ln=left channel sample number
+//              Bx_y= byte order
+//          similar for Right channel
+//              Rn_Bx_y
+//
+//              Example:  R0_B24_31:  first right channel sample in buffer, most significant byte for 32 bit sample
+//
+//  samples are represented as little endian
+//
+// 16 bit mono
+//   [M0_B0_7, M0_B8_15, M1_B0_7, M1_B8_15, ...] 
+// 32 bit mono
+//   [M0_B0_7, M0_B8_15, M0_B16_23, M0_B24_31, M1_B0_7, M1_B8_15, M1_B16_23, M1_B24_31, ...]
+// 16 bit stereo
+//   [L0_B0_7, L0_B8_15, R0_B0_7, R0_B8_15, L1_B0_7, L1_B8_15, R1_B0_7, R1_B8_15, ...]
+// 32 bit stereo
+//   [L0_B0_7, L0_B8_15, L0_B16_23, L0_B24_31, R0_B0_7, R0_B8_15, R0_B16_23, R0_B24_31, 
+//    L1_B0_7, L1_B8_15, L1_B16_23, L1_B24_31, R1_B0_7, R1_B8_15, R1_B16_23, R1_B24_31, ...]
 
 
 // STM32 HAL API does not implement a MONO channel format TODO  finish describing this ...
@@ -83,8 +120,7 @@
 
 #define MEASURE_COPY_PERFORMANCE 1
 
-#define SIZEOF_DMA_BUFFER_IN_BYTES (256)  // TODO what is the minimal size for acceptable performance
-#define QUEUE_CAPACITY (10)
+#define SIZEOF_DMA_BUFFER_IN_BYTES (256)  // TODO what is the minimal size for acceptable performance?
 
 typedef enum {
     TOP_HALF    = 0,
@@ -96,12 +132,16 @@ typedef enum {
     STEREO = 1,
 } machine_i2s_format_t;
 
-typedef struct _machine_i2s_queue_t {
-    mp_obj_t                buffers[QUEUE_CAPACITY];
-    int16_t                 head;
-    int16_t                 tail;
-    int16_t                 size; // TODO is this needed?
-} machine_i2s_queue_t;
+typedef struct _circular_buf_t {
+    uint8_t *buffer;
+    size_t head;  // ISR can modify
+    size_t tail;  // ISR can modify
+    size_t max;   // of the buffer
+    bool full;
+} circular_buf_t;
+
+/// Handle type, the way users interact with the circular buffer API
+typedef circular_buf_t *cbuf_handle_t;
 
 typedef struct _machine_i2s_obj_t {
     mp_obj_base_t           base;
@@ -112,10 +152,12 @@ typedef struct _machine_i2s_obj_t {
     DMA_HandleTypeDef       tx_dma;
     DMA_HandleTypeDef       rx_dma;
     mp_obj_t                callback;
-    mp_obj_t                active_buffer;
-    uint32_t                active_buffer_index;
-    machine_i2s_queue_t     active_queue;
-    machine_i2s_queue_t     idle_queue;
+#if 0    
+    mp_obj_t                active_buffer;  // TODO remove
+    uint32_t                active_buffer_index;// TODO remove
+    machine_i2s_queue_t     active_queue;// TODO remove
+    machine_i2s_queue_t     idle_queue;// TODO remove
+#endif    
     uint8_t                 dma_buffer[SIZEOF_DMA_BUFFER_IN_BYTES];
     pin_obj_t               *sck;
     pin_obj_t               *ws;
@@ -124,7 +166,10 @@ typedef struct _machine_i2s_obj_t {
     int8_t                  bits;
     machine_i2s_format_t    format;
     int32_t                 rate;
+    int32_t                 bufferlen;
+    cbuf_handle_t           internal_buffer;
     bool                    used;
+    bool                    async_detected;
 } machine_i2s_obj_t;
 
 // TODO:  is this RAM usage unacceptably massive in uPy???  check sizeof() machine_i2s_obj_t versus the norms ....
@@ -137,41 +182,171 @@ STATIC machine_i2s_obj_t machine_i2s_obj[2] = {  //  TODO fix magic number 2  py
         [1].used = false 
 };
 
-//
-//  circular queue containing references to MicroPython objects (e.g. bytearray) that hold audio samples
-//
+// circular buffer implemention
+// Source:  https://github.com/embeddedartistry/embedded-resources/tree/master/examples/c/circular_buffer
+// License:  CC0 1.0 Universal:  https://github.com/embeddedartistry/embedded-resources/blob/master/LICENSE
 
-STATIC void queueInit(machine_i2s_queue_t *queue) {
-    queue->tail = -1;
-    queue->head = 0;
-    queue->size = 0;
+/// Opaque circular buffer structure
+//typedef struct circular_buf_t circular_buf_t;
+
+
+cbuf_handle_t circular_buf_init(uint8_t *buffer, size_t size);
+void circular_buf_free(cbuf_handle_t cbuf);
+void circular_buf_reset(cbuf_handle_t cbuf);
+void circular_buf_put(cbuf_handle_t cbuf, uint8_t data);
+int circular_buf_put2(cbuf_handle_t cbuf, uint8_t data);
+int circular_buf_get(cbuf_handle_t cbuf, uint8_t *data);
+int circular_buf_get16(cbuf_handle_t cbuf, uint16_t *data);
+int circular_buf_get32(cbuf_handle_t cbuf, uint32_t *data);
+bool circular_buf_empty(cbuf_handle_t cbuf);
+bool circular_buf_full(cbuf_handle_t cbuf);
+size_t circular_buf_capacity(cbuf_handle_t cbuf);
+size_t circular_buf_size(cbuf_handle_t cbuf);
+
+static void advance_pointer(cbuf_handle_t cbuf)
+{
+    assert(cbuf);
+
+    if(cbuf->full)
+    {
+        cbuf->tail = (cbuf->tail + 1) % cbuf->max;
+    }
+
+    cbuf->head = (cbuf->head + 1) % cbuf->max;
+
+    // mark full because tail is advanced on the next time around
+    cbuf->full = (cbuf->head == cbuf->tail);
 }
 
-
-// note:  must check queue has room before calling TODO ...thread safe?
-// TODO see dequeue() comments
-STATIC void enqueue(machine_i2s_queue_t *queue, mp_obj_t item) {
-    queue->tail = (queue->tail + 1) % QUEUE_CAPACITY;
-    queue->buffers[queue->tail] = item;
-    queue->size = queue->size + 1;
+static void retreat_pointer(cbuf_handle_t cbuf)
+{
+    assert(cbuf);
+    cbuf->full = false;
+    cbuf->tail = (cbuf->tail + 1) % cbuf->max;
 }
 
-// note:  must check queue is not empty before calling TODO ...thread safe?
-//  TODO return NULL when queue is empty
-STATIC mp_obj_t dequeue(machine_i2s_queue_t *queue) {
-    mp_obj_t tmp = queue->buffers[queue->head];
-    queue->head = (queue->head + 1) % QUEUE_CAPACITY;
-    queue->size = queue->size - 1;
-    return tmp;
+cbuf_handle_t circular_buf_init(uint8_t* buffer, size_t size)
+{
+    assert(buffer && size); // TODO replace all asserts with MicroPython exceptions
+    cbuf_handle_t cbuf = m_new(circular_buf_t, 1);
+    assert(cbuf);
+    cbuf->buffer = buffer;
+    cbuf->max = size;
+    circular_buf_reset(cbuf);
+    assert(circular_buf_empty(cbuf));
+    return cbuf;
 }
 
-STATIC bool isEmpty(machine_i2s_queue_t *queue) {
-    return (bool)(queue->size == 0);
+void circular_buf_free(cbuf_handle_t cbuf)
+{
+    assert(cbuf);
+    free(cbuf);  // TODO find micropython equivalent
 }
 
+void circular_buf_reset(cbuf_handle_t cbuf)
+{
+    assert(cbuf);
+    cbuf->head = 0;
+    cbuf->tail = 0;
+    cbuf->full = false;
+}
 
-STATIC bool isFull(machine_i2s_queue_t *queue) {
-    return (bool)(queue->size == QUEUE_CAPACITY);
+size_t circular_buf_size(cbuf_handle_t cbuf)  // TODO improve function name
+{
+    assert(cbuf);
+    size_t size = cbuf->max;
+    if(!cbuf->full)
+    {
+        if(cbuf->head >= cbuf->tail)
+        {
+            size = (cbuf->head - cbuf->tail);
+        }
+        else
+        {
+            size = (cbuf->max + cbuf->head - cbuf->tail);
+        }
+    }
+
+    return size;
+}
+
+size_t circular_buf_capacity(cbuf_handle_t cbuf)
+{
+    assert(cbuf);
+    return cbuf->max;
+}
+
+void circular_buf_put(cbuf_handle_t cbuf, uint8_t data)
+{
+    assert(cbuf && cbuf->buffer);
+    cbuf->buffer[cbuf->head] = data;
+    advance_pointer(cbuf);
+}
+
+int circular_buf_put2(cbuf_handle_t cbuf, uint8_t data)
+{
+    int r = -1;
+    assert(cbuf && cbuf->buffer);
+    if(!circular_buf_full(cbuf))
+    {
+        cbuf->buffer[cbuf->head] = data;
+        advance_pointer(cbuf);
+        r = 0;
+    }
+
+    return r;
+}
+
+int circular_buf_get(cbuf_handle_t cbuf, uint8_t *data)
+{
+    assert(cbuf && data && cbuf->buffer);
+    int r = -1;
+    if(!circular_buf_empty(cbuf))
+    {
+        *data = cbuf->buffer[cbuf->tail];
+        retreat_pointer(cbuf);
+        r = 0;
+    }
+
+    return r;
+}
+
+int circular_buf_get16(cbuf_handle_t cbuf, uint16_t *data)
+{
+    int r = -1;
+    uint8_t data8;
+    r = circular_buf_get(cbuf, &data8);
+    *data = data8;    
+    r = circular_buf_get(cbuf, &data8);
+    *data += data8 << 8;
+    return r;
+}
+
+int circular_buf_get32(cbuf_handle_t cbuf, uint32_t *data)
+{
+    int r = -1;
+    uint8_t data8;
+    r = circular_buf_get(cbuf, &data8);
+    *data = data8;
+    r = circular_buf_get(cbuf, &data8);
+    *data += data8 << 8;
+    r = circular_buf_get(cbuf, &data8);
+    *data += data8 << 16;
+    r = circular_buf_get(cbuf, &data8);
+    *data += data8 << 24;
+    return r;
+}
+
+bool circular_buf_empty(cbuf_handle_t cbuf)
+{
+    assert(cbuf);
+    return (!cbuf->full && (cbuf->head == cbuf->tail));
+}
+
+bool circular_buf_full(cbuf_handle_t cbuf)
+{
+    assert(cbuf);
+    return cbuf->full;
 }
 
 //  For 32-bit audio samples, the STM32 HAL API expects each 32-bit sample to be encoded 
@@ -196,6 +371,7 @@ STATIC bool isFull(machine_i2s_queue_t *queue) {
 //   where:
 //      LEFT Channel =  0x99, 0xBB, 0x11, 0x22
 //      RIGHT Channel = 0x44, 0x55, 0xAB, 0x77
+
 STATIC void machine_i2s_reformat_32_bit_samples(int32_t *sample, uint32_t num_samples) {
     int16_t sample_ms;
     int16_t sample_ls;
@@ -206,52 +382,118 @@ STATIC void machine_i2s_reformat_32_bit_samples(int32_t *sample, uint32_t num_sa
     }
 }
 
-// TODO investigate mp_sched_schedule(self->callback, self);
-STATIC void i2s_handle_mp_callback(machine_i2s_obj_t *self) {
-    if (self->callback != mp_const_none) {
-        gc_lock();
-        nlr_buf_t nlr;
-        if (nlr_push(&nlr) == 0) {
-            mp_call_function_1(self->callback, self);
-            nlr_pop();
-        } else {
-            // Uncaught exception; disable the callback so it doesn't run again.
-            self->callback = mp_const_none;
-            // DMA_HandleTypeDef dma = self->tx_dma;
-            // __HAL_DMA_DISABLE(&dma);
-            printf("uncaught exception in I2S(%u) DMA interrupt handler\n", self->i2s_id);
-            mp_obj_print_exception(&mp_plat_print, (mp_obj_t)nlr.ret_val);
+#define NUM_FORMATS (4)  // TODO confusion with self->format ?
+#define I2S_RX_FRAME_SIZE_IN_BYTES (8)
+
+STATIC const int8_t i2s_frame_overlay[NUM_FORMATS][I2S_RX_FRAME_SIZE_IN_BYTES] = {
+    { 0,  1, -1, -1, -1, -1, -1, -1 },  // Mono, 16-bits
+    { 2,  3,  0,  1, -1, -1, -1, -1 },  // Mono, 32-bits
+    { 0,  1,  4,  5, -1, -1, -1, -1 },  // Stereo, 16-bits
+    { 2,  3,  0,  1,  6,  7,  4,  5 },  // Stereo, 32-bits
+};
+
+STATIC int8_t get_overlay_index(int8_t bits, machine_i2s_format_t format) {
+    if (format == MONO) {
+        if (bits == I2S_DATAFORMAT_16B) {
+            return 0;
+        } else { // 32 bits
+            return 1;
         }
-        gc_unlock();
+    } else { // STEREO
+        if (bits == I2S_DATAFORMAT_16B) {
+            return 2;
+        } else { // 32 bits
+            return 3;
+        }
     }
 }
 
+STATIC int8_t machine_i2s_get_stm_bits(uint16_t mode, int8_t bits) {
+    if (mode == I2S_MODE_MASTER_TX) {
+        return bits;
+    } else { // Master Rx
+        // always read 32 bit words for microphones
+        return I2S_DATAFORMAT_32B;
+    }
+}
+
+uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buffer_info_t *bufinfo , bool async) {
+    // block until the entire sample buffer can be filled from the internal buffer. Space becomes
+    // available in the internal buffer when sample data is copied from DMA.
+    
+    // TODO add "if no callback ..."  e.g. blocking readinto
+    
+    uint8_t target_frame_size_in_bytes;
+    
+    switch (self->bits) {
+        case I2S_DATAFORMAT_16B:
+            target_frame_size_in_bytes = 2;
+            break;
+        case I2S_DATAFORMAT_24B:
+            target_frame_size_in_bytes = 3;
+            break;
+        case I2S_DATAFORMAT_32B:
+        default:
+            target_frame_size_in_bytes = 4;
+            break;
+    }
+    
+    if (self->format == STEREO) {
+        target_frame_size_in_bytes *= 2;
+    }
+
+    uint32_t num_bytes_needed_from_circular_buffer = bufinfo->len * I2S_RX_FRAME_SIZE_IN_BYTES / target_frame_size_in_bytes;
+    
+    // TODO consider that some bytes in circular buf may be skipped over (so #bytes in circular
+    // buf would be more than #bytes in target buffer)
+    while (num_bytes_needed_from_circular_buffer > circular_buf_size(self->internal_buffer)) {
+        mp_hal_delay_us(1);
+    }
+    
+    uint8_t *target_p = bufinfo->buf;
+    uint8_t overlay_index = get_overlay_index(self->bits, self->format);
+    for (uint32_t i=0; i<num_bytes_needed_from_circular_buffer / I2S_RX_FRAME_SIZE_IN_BYTES; i++) {
+        
+        for (uint32_t j=0; j<I2S_RX_FRAME_SIZE_IN_BYTES; j++) {
+            
+            uint8_t sample;
+            circular_buf_get(self->internal_buffer, &sample);
+            int8_t dma_mapping = i2s_frame_overlay[overlay_index][j];
+            if (dma_mapping != -1) {
+                *(target_p + dma_mapping) = sample;
+            }
+        }
+        target_p += target_frame_size_in_bytes;
+    }
+    
+    return bufinfo->len;
+}    
+
+
+uint32_t the_one_write_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buffer_info_t *bufinfo, bool async) {
+    // block until the entire sample buffer can be copied to the internal buffer. Space becomes
+    // available in the internal buffer when sample data is moved to DMA.
+    
+    uint32_t buffer_space_available = circular_buf_capacity(self->internal_buffer) - circular_buf_size(self->internal_buffer);
+    while (bufinfo->len > buffer_space_available) {
+        buffer_space_available = circular_buf_capacity(self->internal_buffer) - circular_buf_size(self->internal_buffer);
+        mp_hal_delay_us(1);  // this is needed to avoid the compiler optimizing out the buffer_space_available calc (?)
+    }
+
+    // enough space available in internal buffer - do the copy
+    for (uint32_t i=0; i<bufinfo->len; i++) {
+        circular_buf_put(self->internal_buffer, ((uint8_t *)bufinfo->buf)[i]);
+    }
+    
+    return bufinfo->len;
+}
 
 // Simplying assumptions:
 //   - size of sample buffers is an integer multiple of dma buffer size
 //   -  TODO  note:  size of 1/2 dma buffer needs to be a multiple of 8 bytes  (so 1/2 of buffer always
 //      contains integer number of complete stereo frames @ 32 bits/sample)
+// note:  this is called by an ISR.  keep it as short as possible
 STATIC void machine_i2s_empty_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffer_ping_pong_t dma_ping_pong) {
-    
-    mp_buffer_info_t bufinfo;
-    
-    // is a sample buffer actively being filled?
-    // if not try to pull one from the idle queue
-    
-    if (self->active_buffer == NULL) {  // TODO rename idle_buffer ?  
-        // try to pull new sample buffer from the queue
-        if (!isEmpty(&self->idle_queue)) {
-            mp_obj_t sample_buffer = dequeue(&self->idle_queue);
-            self->active_buffer = sample_buffer;
-            self->active_buffer_index = 0;
-        } else {
-            // no samples to 
-            // TODO (?) fill dma buffer with zeros as there was no sample data to fill it
-            // this would produce silence audio when no more sample data is available
-            return;
-        }
-    }
-    
     uint16_t dma_buffer_index = 0;
     if (dma_ping_pong == TOP_HALF) {
         dma_buffer_index = 0;  
@@ -259,61 +501,15 @@ STATIC void machine_i2s_empty_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffe
         dma_buffer_index = SIZEOF_DMA_BUFFER_IN_BYTES/2; 
     }
     
-    // 32 bit samples need to be reformatted to match STM32 HAL API requirements for I2S
-    // TODO  SIZEOF_DMA_BUFFER_IN_BYTES/2  <--- make a macro for this
-    if (self->bits == I2S_DATAFORMAT_32B) {
-        machine_i2s_reformat_32_bit_samples((int32_t *)&self->dma_buffer[dma_buffer_index], SIZEOF_DMA_BUFFER_IN_BYTES/2/4);
-    }
+    // when room exists, copy samples into circular buffer 
+    uint32_t buffer_space_available = circular_buf_capacity(self->internal_buffer) - circular_buf_size(self->internal_buffer);
     
-    // copy a block of samples from the dma buffer to the active buffer.
-    // mono format is implemented by duplicating each sample into both L and R channels.
-    // (STM32 HAL API has a stereo I2S implementation, but not mono)
-    
-    mp_get_buffer(self->active_buffer, &bufinfo, MP_BUFFER_WRITE);
-
-    if ((self->format == MONO) && (self->bits == I2S_DATAFORMAT_16B)) {
-        uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/4;  // TODO - really confusing -- fix
-        uint16_t *dma_buffer_p = (uint16_t *)&self->dma_buffer[dma_buffer_index];
-
-        uint8_t *temp = (uint8_t *)bufinfo.buf;
-        uint8_t *temp2 = &temp[self->active_buffer_index];
-        uint16_t *active_buffer_p = (uint16_t *)temp2;
-
-        for (uint32_t i=0; i<samples_to_copy; i++) {
-            active_buffer_p[i] = dma_buffer_p[i*2]; 
+    if (buffer_space_available >= SIZEOF_DMA_BUFFER_IN_BYTES/2) {
+        for (uint32_t i=0; i<SIZEOF_DMA_BUFFER_IN_BYTES/2; i++) {
+            circular_buf_put(self->internal_buffer, self->dma_buffer[dma_buffer_index++]);
         }
-        self->active_buffer_index += SIZEOF_DMA_BUFFER_IN_BYTES/2/2;  // TODO - really confusing -- fix
-        
-    } else if ((self->format == MONO) && (self->bits == I2S_DATAFORMAT_32B)) {
-        uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/8;
-        uint32_t *dma_buffer_p = (uint32_t *)&self->dma_buffer[dma_buffer_index];
-        
-        uint8_t *temp = (uint8_t *)bufinfo.buf;
-        uint8_t *temp2 = &temp[self->active_buffer_index];
-        uint32_t *active_buffer_p = (uint32_t *)temp2;
-        
-        for (uint32_t i=0; i<samples_to_copy; i++) {
-            active_buffer_p[i] = dma_buffer_p[i*2]; 
-        }
-        self->active_buffer_index += SIZEOF_DMA_BUFFER_IN_BYTES/2/2;
-        
-    } else { // STEREO, both 16-bit and 32-bit
-        memcpy(&((uint8_t *)bufinfo.buf)[self->active_buffer_index],
-               &self->dma_buffer[dma_buffer_index], 
-               SIZEOF_DMA_BUFFER_IN_BYTES/2);
-        
-        self->active_buffer_index += SIZEOF_DMA_BUFFER_IN_BYTES/2;
-    }
-    
-    // has active buffer been filled?
-    if (self->active_buffer_index >= bufinfo.len) {
-        // clear buffer and push to active queue
-
-        // TODO clear a buffer somewhere (before being put back into idle queue?)
-        // memset(bufinfo.buf, 0, bufinfo.len);
-        enqueue(&self->active_queue, self->active_buffer);
-        self->active_buffer = NULL;
-        i2s_handle_mp_callback(self);  // TODO "handle" <-- get better word
+    } else {
+        //printf("no space\n");
     }
 }
 
@@ -321,27 +517,9 @@ STATIC void machine_i2s_empty_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffe
 //   - size of sample buffers is an integer multiple of dma buffer size
 //   -  TODO  note:  size of 1/2 dma buffer needs to be a multiple of 8 bytes  (so 1/2 of buffer always
 //      contains integer number of complete stereo frames @ 32 bits/sample)
+// note:  this is called by an ISR.  keep it as short as possible
+// TODO  -- move all the time intensive copies into the write function.  just copy bytes, that's all
 STATIC void machine_i2s_feed_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffer_ping_pong_t dma_ping_pong) {
-    
-    mp_buffer_info_t bufinfo;
-    
-    // is a sample buffer actively being emptied?
-    // if not try to pull one from the active queue
-    
-    if (self->active_buffer == NULL) {  // TODO rename active_buffer ?  
-        // try to pull new sample buffer from the queue
-        if (!isEmpty(&self->active_queue)) {  // TODO better name for active_queue?  sample_queue?
-            mp_obj_t sample_buffer = dequeue(&self->active_queue);
-            self->active_buffer = sample_buffer;
-            self->active_buffer_index = 0;
-        } else {
-            // no samples to 
-            // TODO (?) fill dma buffer with zeros as there was no sample data to fill it
-            // this would produce silence audio when no more sample data is available
-            return;
-        }
-    }
-    
     uint16_t dma_buffer_index = 0;
     if (dma_ping_pong == TOP_HALF) {
         dma_buffer_index = 0;  
@@ -349,61 +527,45 @@ STATIC void machine_i2s_feed_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffer
         dma_buffer_index = SIZEOF_DMA_BUFFER_IN_BYTES/2; 
     }
     
-    mp_get_buffer(self->active_buffer, &bufinfo, MP_BUFFER_WRITE);
+    // TODO check that internal buffer has enough samples before doing the copy
     
-    // copy a block of samples from the active buffer to the dma buffer.
+    // copy a block of samples from the internal buffer to the dma buffer.
     // mono format is implemented by duplicating each sample into both L and R channels.
     // (STM32 HAL API has a stereo I2S implementation, but not mono)
     
     if ((self->format == MONO) && (self->bits == I2S_DATAFORMAT_16B)) {
+        //printf("MONO 16B\n");
         uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/4; // TODO - really confusing -- fix
         uint16_t *dma_buffer_p = (uint16_t *)&self->dma_buffer[dma_buffer_index];
-
-        uint8_t *temp = (uint8_t *)bufinfo.buf;
-        uint8_t *temp2 = &temp[self->active_buffer_index];
-        uint16_t *active_buffer_p = (uint16_t *)temp2;
-
         for (uint32_t i=0; i<samples_to_copy; i++) {
-            dma_buffer_p[i*2] = active_buffer_p[i]; 
-            dma_buffer_p[i*2+1] = active_buffer_p[i]; 
+            uint16_t sample;
+            circular_buf_get16(self->internal_buffer, &sample);  // TODO check ret code 
+            dma_buffer_p[i*2] = sample; 
+            dma_buffer_p[i*2+1] = sample; 
         }
-        self->active_buffer_index += SIZEOF_DMA_BUFFER_IN_BYTES/2/2;  // TODO - really confusing -- fix
-        
     } else if ((self->format == MONO) && (self->bits == I2S_DATAFORMAT_32B)) {
-        uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/8;
+        uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/8;  // TODO - really confusing -- fix
         uint32_t *dma_buffer_p = (uint32_t *)&self->dma_buffer[dma_buffer_index];
-        
-        uint8_t *temp = (uint8_t *)bufinfo.buf;
-        uint8_t *temp2 = &temp[self->active_buffer_index];
-        uint32_t *active_buffer_p = (uint32_t *)temp2;
-        
         for (uint32_t i=0; i<samples_to_copy; i++) {
-            dma_buffer_p[i*2] = active_buffer_p[i]; 
-            dma_buffer_p[i*2+1] = active_buffer_p[i]; 
+            uint32_t sample;
+            circular_buf_get32(self->internal_buffer, &sample);  // TODO check ret code
+            dma_buffer_p[i*2] = sample;
+            dma_buffer_p[i*2+1] = sample;
         }
-        self->active_buffer_index += SIZEOF_DMA_BUFFER_IN_BYTES/2/2;
-        
-    } else { // STEREO, both 16-bit and 32-bit
-        memcpy(&self->dma_buffer[dma_buffer_index], 
-               &((uint8_t *)bufinfo.buf)[self->active_buffer_index], 
-               SIZEOF_DMA_BUFFER_IN_BYTES/2);
-        
-        self->active_buffer_index += SIZEOF_DMA_BUFFER_IN_BYTES/2;
+    } else { // STEREO, both 16-bit and 32-bit 
+        uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/4;  // ... TODO:  isn't 16 bit twice this number?
+        uint32_t *dma_buffer_p = (uint32_t *)&self->dma_buffer[dma_buffer_index];
+        for (uint32_t i=0; i<samples_to_copy; i++) {
+            uint32_t sample;
+            circular_buf_get32(self->internal_buffer, &sample);  // TODO check ret code
+            dma_buffer_p[i] = sample;
+        }
     }
     
     // 32 bit samples need to be reformatted to match STM32 HAL API requirements for I2S
     // TODO  SIZEOF_DMA_BUFFER_IN_BYTES/2  <--- make a macro for this
     if (self->bits == I2S_DATAFORMAT_32B) {
         machine_i2s_reformat_32_bit_samples((int32_t *)&self->dma_buffer[dma_buffer_index], SIZEOF_DMA_BUFFER_IN_BYTES/2/4);
-    }
-    
-    // has active buffer been emptied?
-    if (self->active_buffer_index >= bufinfo.len) {
-        // clear buffer and push to idle queue
-        memset(bufinfo.buf, 0, bufinfo.len);
-        enqueue(&self->idle_queue, self->active_buffer);
-        self->active_buffer = NULL;
-        i2s_handle_mp_callback(self);  // TODO "handle" <-- get better word
     }
 }
 
@@ -464,7 +626,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *i2s_obj) {
         return false;
     }
 
-    // GPIO Pin initialization
+    // GPIO Pin initialization  // TODO refactor to call a single function for each pin
     if (i2s_obj->sck != MP_OBJ_NULL) {
         GPIO_InitStructure.Pin = i2s_obj->sck->pin_mask;
         const pin_af_obj_t *af = pin_find_af(i2s_obj->sck, AF_FN_I2S, i2s_obj->i2s_id);
@@ -507,7 +669,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *i2s_obj) {
     //    48kHz family is accurate for 8, 16, 24, and 48kHz but not 32 or 96
     //    44.1kHz family is accurate for 11.025, 22.05 and 44.1kHz but not 88.2
 
-    // TODO: support more of the commonly-used frequencies and account for 16/32 bit frames
+    // TODO: support more of the commonly-used frequencies and account for 16/24/32 bit frames
     // TODO: Refactor to use macros as provided by stm32f4xx_hal_rcc_ex.h
     
 #if defined (STM32F405xx)
@@ -539,7 +701,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *i2s_obj) {
         // Reset and initialize Tx and Rx DMA channels
 
         if (i2s_obj->mode == I2S_MODE_MASTER_RX) {
-            // Reset and initialize rx DMA
+            // Reset and initialize RX DMA
             dma_invalidate_channel(i2s_obj->rx_dma_descr);
 
             dma_init(&i2s_obj->rx_dma, i2s_obj->rx_dma_descr, DMA_PERIPH_TO_MEMORY, &i2s_obj->i2s);
@@ -559,8 +721,8 @@ STATIC bool i2s_init(machine_i2s_obj_t *i2s_obj) {
                 return false;
             }
 #endif
-        } else {
-            // Reset and initialize tx DMA
+        } else {  // I2S_MODE_MASTER_TX
+            // Reset and initialize TX DMA
             dma_invalidate_channel(i2s_obj->tx_dma_descr);
 
             dma_init(&i2s_obj->tx_dma, i2s_obj->tx_dma_descr, DMA_MEMORY_TO_PERIPH, &i2s_obj->i2s);
@@ -604,18 +766,6 @@ STATIC bool i2s_init(machine_i2s_obj_t *i2s_obj) {
     }
 }
     
-#if 0
-STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in);
-void i2s_deinit(void) {
-    for (int i = 0; i < MP_ARRAY_SIZE(MP_STATE_PORT(pyb_i2s_obj_all)); i++) {
-        machine_i2s_obj_t *i2s_obj = MP_STATE_PORT(pyb_i2s_obj_all)[i];
-        if (i2s_obj != NULL) {
-            machine_i2s_deinit(i2s_obj);
-        }
-    }
-}
-#endif
-
 void HAL_I2S_ErrorCallback(I2S_HandleTypeDef *hi2s) {
     uint32_t errorCode = HAL_I2S_GetError(hi2s);
     printf("I2S Error = %ld\n", errorCode);
@@ -642,9 +792,8 @@ void HAL_I2S_RxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
         self = &(machine_i2s_obj)[1];
     }
     
-    
     // top half of buffer now filled, 
-    // safe to empty the top  half while the bottom half of buffer is being filled
+    // safe to empty the top half while the bottom half of buffer is being filled
     machine_i2s_empty_dma(self, TOP_HALF);  // TODO check with =S= vs uPy coding rules.  is machine_i2s prefix really needed for STATIC?
 }
 
@@ -670,10 +819,11 @@ void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
     }
     
     // top half of buffer now emptied, 
-    // safe to fill the top  half while the bottom half of buffer is being emptied
+    // safe to fill the top half while the bottom half of buffer is being emptied
     machine_i2s_feed_dma(self, TOP_HALF);  // TODO check with =S= vs uPy coding rules.  is machine_i2s prefix really needed for STATIC?
 }
 
+// TODO n_pos_args is not an implementation pattern for MicroPython
 STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
 
     enum {
@@ -684,8 +834,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         ARG_bits,
         ARG_format,
         ARG_rate,
-        ARG_buffers,
-        ARG_callback,
+        ARG_bufferlen,
     };
 
     static const mp_arg_t allowed_args[] = {
@@ -696,8 +845,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         { MP_QSTR_bits,             MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_format,           MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_rate,             MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_buffers,          MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
-        { MP_QSTR_callback,         MP_ARG_KW_ONLY |                   MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_bufferlen,        MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
     };
 
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -706,9 +854,6 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     // set the I2S configuration values
     memset(&self->i2s, 0, sizeof(self->i2s));
     
-    queueInit(&self->active_queue);
-    queueInit(&self->idle_queue);
-
     //
     // ---- Check validity of arguments ----
     //
@@ -770,36 +915,16 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     }
 
     // is Sample Rate valid?
-    // No validation done:  TODO can it be validated?
+    // No validation done:  TODO can it be validated?  multiple of 8 bytes?
     
-    // are Buffers valid?
-    // buffers are contained in a list or tuple
-    // check that type is a list or tuple
-    if (mp_obj_is_type(args[ARG_buffers].u_obj, &mp_type_tuple) || mp_obj_is_type(args[ARG_buffers].u_obj, &mp_type_list)) {
-        mp_uint_t len = 0;
-        mp_obj_t *elem;
-        mp_obj_get_array(args[ARG_buffers].u_obj, &len, &elem);
-        
-        if (len > QUEUE_CAPACITY) {
-            mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("Num buffers exceeded, max is %d"), QUEUE_CAPACITY);
-        }
-        
-        // add buffers to the idle queue
-        for (uint16_t i=0; i<len; i++) {
-            // check for valid buffer
-            mp_buffer_info_t bufinfo;
-            mp_get_buffer_raise(elem[i], &bufinfo, MP_BUFFER_RW);
-            
-            // add buffer to idle queue 
-            enqueue(&self->idle_queue, elem[i]);
-        }
+    // allocate an internal sample buffer
+    int32_t internal_buffer_len = args[ARG_bufferlen].u_int;
+    if (internal_buffer_len > 0) {
+        uint8_t *buffer = m_new(uint8_t, internal_buffer_len);
+        self->internal_buffer = circular_buf_init(buffer, internal_buffer_len);
     } else {
-        mp_raise_TypeError(MP_ERROR_TEXT("Buffers must be contained in a list or tuple"));
+        mp_raise_ValueError(MP_ERROR_TEXT("Buffer length is not valid"));
     }
-
-    // is callback valid?
-    //printf("callable = %d\n", mp_obj_is_callable(args[ARG_callback].u_obj));  // TODO test with no callback
-    // TODO raise exception if callback is bogus ?
     
     self->sck = args[ARG_sck].u_obj;
     self->ws = args[ARG_ws].u_obj;
@@ -808,12 +933,13 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     self->bits = i2s_bits_per_sample;
     self->format = i2s_format;
     self->rate = args[ARG_rate].u_int;
-    self->callback = args[ARG_callback].u_obj;
+    self->callback = MP_OBJ_NULL;
+    self->async_detected = false;
     
     I2S_InitTypeDef *init = &self->i2s.Init;
     init->Mode = i2s_mode;
     init->Standard   = I2S_STANDARD_PHILIPS;
-    init->DataFormat = i2s_bits_per_sample;
+    init->DataFormat = machine_i2s_get_stm_bits(self->mode, self->bits);
     init->MCLKOutput = I2S_MCLKOUTPUT_DISABLE;
     init->AudioFreq  = args[ARG_rate].u_int;
     init->CPOL       = I2S_CPOL_LOW;
@@ -825,6 +951,25 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     }
     
     self->used = true;
+    
+    // start DMA.  DMA is configured to run continuously, using a circular buffer configuration
+    uint16_t number_of_samples = 0;
+    if (init->DataFormat == I2S_DATAFORMAT_16B) {
+        number_of_samples = SIZEOF_DMA_BUFFER_IN_BYTES / 2;
+    } else {  // 32 bits
+        number_of_samples = SIZEOF_DMA_BUFFER_IN_BYTES / 4;
+    }
+    HAL_StatusTypeDef status;
+
+    if (self->mode == I2S_MODE_MASTER_TX) {
+        status = HAL_I2S_Transmit_DMA(&self->i2s, (void *)self->dma_buffer, number_of_samples);
+    } else {  // RX
+        status = HAL_I2S_Receive_DMA(&self->i2s, (void *)self->dma_buffer, number_of_samples);
+    }
+
+    if (status != HAL_OK) {
+        mp_hal_raise(status);
+    }
 }
 
 /******************************************************************************/
@@ -839,11 +984,11 @@ STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
     
     uint8_t bits = 0;
     if (self->bits == I2S_DATAFORMAT_16B) { bits = 16; }
-    else if (self->bits == I2S_DATAFORMAT_24B) { mode = 24; }
-    else if (self->bits == I2S_DATAFORMAT_32B) { mode = 32; }
+    else if (self->bits == I2S_DATAFORMAT_24B) { bits = 24; }
+    else if (self->bits == I2S_DATAFORMAT_32B) { bits = 32; }
     else { /* shouldn't get here */ }
     
-    // TODO add self->format
+    // TODO update with all arguments
     
     mp_printf(print, "I2S(id=%u, sck=%q, ws=%q, sd=%q\n"
             "mode=%q, bits=%u, rate=%d)\n",
@@ -929,158 +1074,86 @@ STATIC mp_obj_t machine_i2s_init(mp_uint_t n_pos_args, const mp_obj_t *pos_args,
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_init_obj, 1, machine_i2s_init);
 
-// TODO is returning None "pythonic" when no buffer is available?
-STATIC mp_obj_t machine_i2s_getbuffer(mp_obj_t self_in) {
-    machine_i2s_obj_t *self = self_in;
+STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint_t size, int *errcode) {
+    machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    
+    // make sure we want at least 1 char
+    if (size == 0) {
+        return 0;
+    }
 
     if (!self->used) {
-        mp_raise_ValueError(MP_ERROR_TEXT("I2S port is not initialized")); // TODO needed?
-    }
-    
-    //if (self->mode != I2S_MODE_MASTER_TX) {
-    //    mp_raise_ValueError(MP_ERROR_TEXT("I2S not configured for write method"));
-    //}
-    
-    // For TX mode, remove from idle queue. For RX mode, add to active queue 
-    if (self->mode == I2S_MODE_MASTER_TX) {
-        // remove from idle queue 
-        // TODO change way of doing this ... try to remove with dequeue(), then test for true/false ...false = queue is full... can then 
-        // eliminate isEmpty() routine
-        if (isEmpty(&self->idle_queue)) {
-            return mp_const_none;
-        } else {
-            mp_obj_t buffer = dequeue(&self->idle_queue);
-            return buffer;
-        }
-    } else { // RX
-        // remove from active queue 
-        // TODO change way of doing this ... try to remove with dequeue(), then test for true/false ...false = queue is full... can then 
-        // eliminate isEmpty() routine
-        if (isEmpty(&self->active_queue)) {
-            return mp_const_none;
-        } else {
-            mp_obj_t buffer = dequeue(&self->active_queue);
-            return buffer;  
-        }
-    }
-}
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_i2s_getbuffer_obj, machine_i2s_getbuffer);
-
-
-
-STATIC mp_obj_t machine_i2s_putbuffer(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_buf };
-    // TODO check that buffer size is multiple of 1/2 dma buffer size e.g  128 bytes
-    
-    // TODO check:  is buffer passed in one of the buffer supplied in the constructor?
-    STATIC const mp_arg_t allowed_args[] = {
-        { MP_QSTR_buf, MP_ARG_REQUIRED | MP_ARG_OBJ,  {.u_obj = mp_const_none} }, 
-    };
-    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
-    mp_arg_parse_all(n_pos_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(args), allowed_args, args);
-
-    machine_i2s_obj_t *self = pos_args[0];
-
-    if (!self->used) {
-        mp_raise_ValueError(MP_ERROR_TEXT("I2S port is not initialized"));  // needed?
-    }
-    
-    //if (self->mode != I2S_MODE_MASTER_TX) {
-    //    mp_raise_ValueError(MP_ERROR_TEXT("I2S not configured for write method"));
-    //}
-    
-    mp_buffer_info_t bufinfo;
-    mp_get_buffer(args[ARG_buf].u_obj, &bufinfo, MP_BUFFER_WRITE);
-    
-    // For TX mode, add to active queue. For RX mode, add to inactive queue 
-    if (self->mode == I2S_MODE_MASTER_TX) {
-        // add buffer to queue 
-        // TODO change way of doing this ... try to add with enqueue(), then test for true/false ...false = queue is full... can then 
-        // eliminate isFull() routine
-        if (isFull(&self->active_queue)) {
-            mp_raise_ValueError(MP_ERROR_TEXT("Nogo - active queue is friggen full - end of the road bud"));
-        }
-        
-        enqueue(&self->active_queue, args[ARG_buf].u_obj);
-    } else { // RX
-        // add buffer to queue 
-        // TODO change way of doing this ... try to add with enqueue(), then test for true/false ...false = queue is full... can then 
-        // eliminate isFull() routine
-        if (isFull(&self->idle_queue)) {
-            mp_raise_ValueError(MP_ERROR_TEXT("Nogo - inactive queue is friggen full - end of the road bud"));
-        }
-        
-        // TODO likely memset the buffer to all 0s ?
-        enqueue(&self->idle_queue, args[ARG_buf].u_obj);
+        *errcode = MP_EPERM;
     }
 
-    return mp_const_none;  
-}
-STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_putbuffer_obj, 2, machine_i2s_putbuffer);
-
-STATIC mp_obj_t machine_i2s_start(mp_obj_t self_in) {  // TODO(?) self_in ---> self
-    machine_i2s_obj_t *self = self_in;
-    
-    // TODO - add error checks ... for example, when this is called when no buffers exist in the queue
-    // or:  has already been started and start() is called again
-    // OR ... allow calling when no buffers exist and it's already running
-    
-    mp_buffer_info_t bufinfo;
-    
-    // TODO maybe do nothing is start() is called when it's already started?
-    // - this could remove need to call isAvailable() in python code
-
-#if 0
-    if (isEmpty(&self->active_queue) && self->mode == I2S_MODE_MASTER_TX) {
-        mp_raise_ValueError(MP_ERROR_TEXT("Nothing to transmit"));
-        // TODO - might be OK to start and just send empty dma_buffer (TODO:  clear it first)
-        // and then later have putbuffer fill it
+    if (self->mode != I2S_MODE_MASTER_RX) {
+        *errcode = MP_EPERM;
     }
-    
-    if (isEmpty(&self->idle_queue) && self->mode == I2S_MODE_MASTER_RX) {
-        mp_raise_ValueError(MP_ERROR_TEXT("No buffer for read"));
-        // TODO - might be OK to start and just receive into empty dma_buffer
-        // and then later have readinto empty it
-    }
+
+    if (self->callback != MP_OBJ_NULL) {
+#if 0        
+        machine_i2s_buffer_transfer_t buffer_transfer;
+        buffer_transfer.bufinfo.buf = (void *)buf_in;
+        buffer_transfer.bufinfo.len = size;
+        buffer_transfer.callback = self->callback;
+        buffer_transfer.type = I2S_RX_TRANSFER;
+        xQueueSend(self->i2s_buffer_transfer_queue, &buffer_transfer, portMAX_DELAY);  // TODO handle error return case
+        return buffer_transfer.bufinfo.len;
 #endif
-    
-    // TODO seems to be a huge amount of coupling between queues and machine_i2s_feed_dma()
-    if (self->mode == I2S_MODE_MASTER_TX) {
-        mp_obj_t sample_buffer = dequeue(&self->active_queue);
-        self->active_buffer = sample_buffer;
-        mp_get_buffer(self->active_buffer, &bufinfo, MP_BUFFER_WRITE);
-    } else {  // RX
-        mp_obj_t sample_buffer = dequeue(&self->idle_queue);
-        self->active_buffer = sample_buffer;
-        mp_get_buffer(self->active_buffer, &bufinfo, MP_BUFFER_WRITE);
+        return 1;
+    } else {
+        mp_buffer_info_t bufinfo;
+        bufinfo.buf = (void *)buf_in;
+        bufinfo.len = size;
+        uint32_t num_bytes_read;
+        if (self->async_detected == true) {  // TODO refactor ... just the true/false are different
+            num_bytes_read = the_one_readinto_function_to_rule_them_all(self, &bufinfo, true);
+            //printf("async, num_bytes_read: %d\n", num_bytes_read);
+        } else {
+            num_bytes_read = the_one_readinto_function_to_rule_them_all(self, &bufinfo, false);
+            //printf("non-async, num_bytes_read: %ld\n", num_bytes_read);
+        }
+        return num_bytes_read;
     }
-
-
-    // start DMA.  DMA is configured to run continuously, using a circular buffer configuration
-    uint16_t number_of_samples = 0;
-    if (self->bits == I2S_DATAFORMAT_16B) {
-        number_of_samples = SIZEOF_DMA_BUFFER_IN_BYTES / 2;
-    } else {  // 32 bits
-        number_of_samples = SIZEOF_DMA_BUFFER_IN_BYTES / 4;
-    }
-    HAL_StatusTypeDef status;
-
-    if (self->mode == I2S_MODE_MASTER_TX) {
-        machine_i2s_feed_dma(self, TOP_HALF);  // TODO is machine_i2s prefix really desirable for STATIC?
-        machine_i2s_feed_dma(self, BOTTOM_HALF);
-        status = HAL_I2S_Transmit_DMA(&self->i2s, (void *)self->dma_buffer, number_of_samples);
-    } else {  // RX
-        status = HAL_I2S_Receive_DMA(&self->i2s, (void *)self->dma_buffer, number_of_samples);
-    }
-
-    if (status != HAL_OK) {
-        mp_hal_raise(status);
-    }
-    
-    return mp_const_none;
-    
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_i2s_start_obj, machine_i2s_start);
+
+STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, mp_uint_t size, int *errcode) {
+    machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);
+
+    if (!self->used) {
+        *errcode = MP_EPERM;
+    }
+
+    if (self->mode != I2S_MODE_MASTER_TX) {
+        *errcode = MP_EPERM;
+    }
+
+    if (self->callback != MP_OBJ_NULL) {
+#if 0        
+        machine_i2s_buffer_transfer_t buffer_transfer;
+        buffer_transfer.bufinfo.buf = (void *)buf_in;
+        buffer_transfer.bufinfo.len = size;
+        buffer_transfer.callback = self->callback;
+        buffer_transfer.type = I2S_TX_TRANSFER;
+        xQueueSend(self->i2s_buffer_transfer_queue, &buffer_transfer, portMAX_DELAY);  // TODO handle error return case
+        return buffer_transfer.bufinfo.len;
+#endif        
+        return 1;
+    } else {
+        mp_buffer_info_t bufinfo;
+        bufinfo.buf = (void *)buf_in;
+        bufinfo.len = size;
+        uint32_t num_bytes_written;
+        if (self->async_detected == true) {  // TODO refactor ... just the true/false are different
+            num_bytes_written = the_one_write_function_to_rule_them_all(self, &bufinfo, true);
+            //printf("async, num_bytes_written: %d\n", num_bytes_written);
+        } else {
+            num_bytes_written = the_one_write_function_to_rule_them_all(self, &bufinfo, false);
+            //printf("non-async, num_bytes_written: %d\n", num_bytes_written);
+        }
+        return num_bytes_written;
+    }
+}
 
 
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
@@ -1106,6 +1179,21 @@ STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_i2s_deinit_obj, machine_i2s_deinit);
 
+STATIC mp_obj_t machine_i2s_irq(mp_obj_t self_in, mp_obj_t handler) {
+    machine_i2s_obj_t *self = self_in;
+    if (handler != mp_const_none && !mp_obj_is_callable(handler)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid handler"));
+    }
+    self->callback = handler;
+
+    // TODO add ability to disable non-blocking operation 
+    // self->client_task_handle = NULL;
+
+    // TODO set some sort of flag to indicate NON-BLOCKING operation
+
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(machine_i2s_irq_obj, machine_i2s_irq);
 
 #if MEASURE_COPY_PERFORMANCE
 STATIC mp_obj_t machine_i2s_copytest(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -1161,20 +1249,15 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_copytest_obj, 1, machine_i2s_copyt
 STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     // Methods
     { MP_ROM_QSTR(MP_QSTR_init),            MP_ROM_PTR(&machine_i2s_init_obj) },
-    { MP_ROM_QSTR(MP_QSTR_getbuffer),       MP_ROM_PTR(&machine_i2s_getbuffer_obj) },
-    { MP_ROM_QSTR(MP_QSTR_putbuffer),       MP_ROM_PTR(&machine_i2s_putbuffer_obj) },
-    { MP_ROM_QSTR(MP_QSTR_start),           MP_ROM_PTR(&machine_i2s_start_obj) },
+    { MP_ROM_QSTR(MP_QSTR_readinto),        MP_ROM_PTR(&mp_stream_readinto_obj) },
+    { MP_ROM_QSTR(MP_QSTR_write),           MP_ROM_PTR(&mp_stream_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_deinit),          MP_ROM_PTR(&machine_i2s_deinit_obj) },
+    { MP_ROM_QSTR(MP_QSTR_irq),             MP_ROM_PTR(&machine_i2s_irq_obj) },
+    
 #if MEASURE_COPY_PERFORMANCE
     { MP_ROM_QSTR(MP_QSTR_copytest),       MP_ROM_PTR(&machine_i2s_copytest_obj) },
 #endif     
     
-    // TODO add separate callback() method to configure a callback?  research uPy conventions
-    
-    // TODO when "getbuffer" is implemented be sure to initialize the buf with zeros, to eliminate
-    // residual samples that might come into play for a TX situation where we are reading
-    // a SD Card file and there is a partial fill at the end of the file.
-
     // Constants
     { MP_ROM_QSTR(MP_QSTR_RX),              MP_ROM_INT(I2S_MODE_MASTER_RX) },
     { MP_ROM_QSTR(MP_QSTR_TX),              MP_ROM_INT(I2S_MODE_MASTER_TX) },
@@ -1183,10 +1266,79 @@ STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
 };
 MP_DEFINE_CONST_DICT(machine_i2s_locals_dict, machine_i2s_locals_dict_table);
 
+STATIC mp_uint_t machine_i2s_ioctl(mp_obj_t self_in, mp_uint_t request, mp_uint_t arg, int *errcode) {
+#if 0    
+    machine_i2s_obj_t *self = self_in;
+#endif    
+    mp_uint_t ret;
+    mp_uint_t flags = arg;
+#if 0
+    //printf("ioctl() poll\n");
+    // set a flag indicating that I2S is being used in uasyncio mode
+    // note:  assumption that an IO poll from the uasyncio scheduler is the only means
+    // to get here
+    self->async_detected = true;  // TODO find a better mechanism to detect asyncio
+#endif
+    if (request == MP_STREAM_POLL) {
+        ret = 0;
+
+        if (flags & MP_STREAM_POLL_RD) {
+#if 0
+            i2s_event_t i2s_event;
+
+            // check event queue to determine if a DMA buffer has been filled
+            // (which is a indication that at least one DMA buffer is available to be read)
+            // note:  timeout = 0 so the call is non-blocking
+            if(xQueueReceive(self->i2s_event_queue, &i2s_event, 0)) {
+                if (i2s_event.type == I2S_EVENT_RX_DONE) {
+                    //printf("ioctl RX EVENT\n");
+                    // getting here means that at least one DMA buffer is now full
+                    // indicate that data can be read from the stream
+                    ret |= MP_STREAM_POLL_RD;
+                }
+            }
+#endif            
+        }
+
+        if (flags & MP_STREAM_POLL_WR) {
+#if 0
+            i2s_event_t i2s_event;
+
+            // check event queue to determine if a DMA buffer has been emptied
+            // (which is a indication that at least one DMA buffer is available to be written)
+            // note:  timeout = 0 so the call is non-blocking
+            if(xQueueReceive(self->i2s_event_queue, &i2s_event, 0)) {
+                if (i2s_event.type == I2S_EVENT_TX_DONE) {
+                    //printf("ioctl TX EVENT\n");
+                    // getting here means that at least one DMA buffer is now empty
+                    // indicate that data can be written to the stream
+                    ret |= MP_STREAM_POLL_WR;
+                }
+            }
+#endif            
+        }
+    } else {
+        *errcode = MP_EINVAL;
+        ret = MP_STREAM_ERROR;
+    }
+
+    return ret;
+}
+
+STATIC const mp_stream_p_t i2s_stream_p = {
+    .read = machine_i2s_stream_read,
+    .write = machine_i2s_stream_write,
+    .ioctl = machine_i2s_ioctl,
+    .is_text = false,
+};
+
 const mp_obj_type_t machine_i2s_type = {
     { &mp_type_type },
     .name = MP_QSTR_I2S,
     .print = machine_i2s_print,
+    .getiter = mp_identity_getiter,
+    .iternext = mp_stream_unbuffered_iter,
+    .protocol = &i2s_stream_p,
     .make_new = machine_i2s_make_new,
     .locals_dict = (mp_obj_dict_t *) &machine_i2s_locals_dict,
 };

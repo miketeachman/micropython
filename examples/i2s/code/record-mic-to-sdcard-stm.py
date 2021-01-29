@@ -1,35 +1,62 @@
-import pyb
-import time
+# The MIT License (MIT)
+# Copyright (c) 2021 Mike Teachman
+# https://opensource.org/licenses/MIT
+
+# Purpose: Read audio samples from an I2S microphone and save to SD card
+# - read audio samples from I2S hardware
+# - convert 32-bit samples to specified bit size
+# - write samples to a SD card file in WAV format
+# - play file using I2S DAC
+#
+# Recorded WAV file is named based on USER CONFIGURATION:
+#    examples
+#       mic_stereo_16bits.wav
+#       mic_mono_32bits.wav
+#
+# Hardware tested:
+# - INMP441 microphone module 
+# - MSM261S4030H0 microphone module
+#
+
 import uos
-from machine import I2S
+import pyb
 from machine import Pin
+from machine import I2S
+import time
+import gc
 
-# TODO - correct example taking into account that Mics should have 32 SCK cycles per channel 
-# Use itools or new built in functionality?
-# perhaps standardize on putting out 32 SCK cycles/word, and then the bits argument indicates how many samples 
-# you want to store.  TBD....
-# "There must be 64 SCK cycles in each WS stereo frame, or 32 SCK cycles per data-word"
+NON_BLOCKING = False
 
-num_channels = {I2S.MONO:1, I2S.STEREO:2}
+def i2s_callback_tx(i2s):
+    global wait_tx
+    wait_tx = 0
 
-def i2s_callback(s):
-    pass
+def i2s_callback_rx(i2s):
+    global wait_rx
+    wait_rx = 0
 
 # for the Pyboard D hardware enable external 3.3v output 
 if uos.uname().machine.find('PYBD') == 0:
     pyb.Pin('EN_3V3').on()
     uos.mount(pyb.SDCard(), '/sd')
 
+num_channels = {I2S.MONO:1, I2S.STEREO:2}
+
 #======= USER CONFIGURATION =======
-WAV_FILE = 'test.wav'
-WAV_SAMPLE_SIZE_IN_BITS = 32
-FORMAT = I2S.MONO
+RECORD_TIME_IN_SECONDS = 5
 SAMPLE_RATE_IN_HZ = 16000
-RECORD_TIME_IN_SECONDS = 10
+FORMAT = I2S.STEREO
+WAV_SAMPLE_SIZE_IN_BITS = 32
 #======= USER CONFIGURATION =======
 
 NUM_CHANNELS = num_channels[FORMAT]
+WAV_SAMPLE_SIZE_IN_BYTES = WAV_SAMPLE_SIZE_IN_BITS // 8
+RECORDING_SIZE_IN_BYTES = RECORD_TIME_IN_SECONDS * SAMPLE_RATE_IN_HZ * WAV_SAMPLE_SIZE_IN_BYTES * NUM_CHANNELS
 
+filename = {(I2S.MONO,16):'mic_mono_16bits.wav',
+            (I2S.MONO,32):'mic_mono_32bits.wav',
+            (I2S.STEREO,16):'mic_stereo_16bits.wav', 
+            (I2S.STEREO,32):'mic_stereo_32bits.wav'} 
 
 def create_wav_header(sampleRate, bitsPerSample, num_channels, num_samples):
     datasize = num_samples * num_channels * bitsPerSample // 8
@@ -48,57 +75,7 @@ def create_wav_header(sampleRate, bitsPerSample, num_channels, num_samples):
     o += (datasize).to_bytes(4,'little')                                        # (4byte) Data size in bytes
     return o
 
-
-#     SCK - Y6  (SPI2 SCK)
-#     WS -  Y5  (SPI2 NSS)
-#     SD -  Y8  (SPI2 MOSI)
-sck_mic_pin = Pin('Y6') 
-ws_mic_pin = Pin('Y5')  
-sd_mic_pin = Pin('Y8')
-
-
-buf_1 = bytearray(1024)
-buf_2 = bytearray(1024)
-buf_3 = bytearray(1024)
-buf_4 = bytearray(1024)
-buf_5 = bytearray(1024)
-
-# TODO  define with memoryview?  see what happens with allocation in loop below.  GC?
-
-audio_in = I2S(
-    2, # TODO add constant for this
-    sck=sck_mic_pin, ws=ws_mic_pin, sd=sd_mic_pin, 
-    mode=I2S.RX,
-    bits=WAV_SAMPLE_SIZE_IN_BITS,
-    format=FORMAT,
-    rate=SAMPLE_RATE_IN_HZ,
-    buffers = [buf_1, buf_2, buf_3, buf_4, buf_5],
-    callback=i2s_callback)
-
-
-#     SCK - W29 (SPI1 SCK)
-#     WS -  W16 (SPI1 NSS)
-#     SD -  Y4  (SPI1 MOSI)
-sck_pin = Pin('W29') 
-ws_pin = Pin('W16')  
-sd_pin = Pin('Y4')
-
-buf_6 = bytearray(1024)
-buf_7 = bytearray(1024)
-buf_8 = bytearray(1024)
-buf_9 = bytearray(1024)
-buf_10 = bytearray(1024)
-
-audio_out = I2S(
-    1, # TODO add constant for this
-    sck=sck_pin, ws=ws_pin, sd=sd_pin, 
-    mode=I2S.TX,
-    bits=WAV_SAMPLE_SIZE_IN_BITS,
-    format=FORMAT,
-    rate=SAMPLE_RATE_IN_HZ,
-    buffers = [buf_6, buf_7, buf_8, buf_9, buf_10],
-    callback=i2s_callback)
-
+WAV_FILE = filename[(FORMAT, WAV_SAMPLE_SIZE_IN_BITS)]
 if uos.uname().machine.find('PYBD') == 0:
     wav_file = '/sd/{}'.format(WAV_FILE)
 else:
@@ -114,61 +91,118 @@ wav_header = create_wav_header(
     SAMPLE_RATE_IN_HZ * RECORD_TIME_IN_SECONDS
 )
 num_bytes_written = wav.write(wav_header)
-isStarted = False
+
+#     SCK - Y6  (SPI2 SCK)
+#     WS -  Y5  (SPI2 NSS)
+#     SD -  Y8  (SPI2 MOSI)
+sck_mic_pin = Pin('Y6') 
+ws_mic_pin = Pin('Y5')  
+sd_mic_pin = Pin('Y8')
+
+audio_in = I2S(
+    2, # TODO add constant for this
+    sck=sck_mic_pin, ws=ws_mic_pin, sd=sd_mic_pin, 
+    mode=I2S.RX,
+    bits=WAV_SAMPLE_SIZE_IN_BITS,
+    format=FORMAT,
+    rate=SAMPLE_RATE_IN_HZ,
+    bufferlen = 20000)
+
+if NON_BLOCKING:
+    audio_in.irq(i2s_callback_rx)
+    wait_rx = 1
+    
+# allocate sample arrays
+#   memoryview used to reduce heap allocation in while loop
+mic_samples = bytearray(2000)
+mic_samples_mv = memoryview(mic_samples)
+
 num_sample_bytes_written_to_wav = 0
 
 print('==========  START RECORDING ==========')
-while num_sample_bytes_written_to_wav < SAMPLE_RATE_IN_HZ * RECORD_TIME_IN_SECONDS * NUM_CHANNELS * (WAV_SAMPLE_SIZE_IN_BITS // 8):
+print('RECORDING_SIZE_IN_BYTES: ', RECORDING_SIZE_IN_BYTES)
+while num_sample_bytes_written_to_wav < RECORDING_SIZE_IN_BYTES:
     try:
-        if isStarted == False:
-            audio_in.start()
-            isStarted = True
-
-        buffer = audio_in.getbuffer()
+        # try to read a block of samples from the I2S microphone
+        num_bytes_read_from_mic = audio_in.readinto(mic_samples_mv)
         
-        if buffer != None:
-            # can write to WAV file when buffer is flagged as being FULL
-            # - use callback to indicate this?
-            num_bytes_written = wav.write(buffer)
-            audio_in.putbuffer(buffer)
-            num_sample_bytes_written_to_wav += num_bytes_written
+        if NON_BLOCKING:
+            while wait_rx == 1:
+                time.sleep_ms(1)
+            wait_rx = 1
             
+        if num_bytes_read_from_mic > 0:
+            num_bytes_to_write = min(num_bytes_read_from_mic, RECORDING_SIZE_IN_BYTES - num_sample_bytes_written_to_wav)
+            # write samples to WAV file
+            num_bytes_written = wav.write(mic_samples_mv[:num_bytes_to_write])
+            num_sample_bytes_written_to_wav += num_bytes_written
+
     except (KeyboardInterrupt, Exception) as e:
         print('caught exception {} {}'.format(type(e).__name__, e))
         break
-
+    
 wav.close()
+#uos.umount("/sd")
 audio_in.deinit()
 print('==========  DONE RECORDING ==========')
 
 # ===== PLAYBACK ======
+#     SCK - W29 (SPI1 SCK)
+#     WS -  W16 (SPI1 NSS)
+#     SD -  Y4  (SPI1 MOSI)
+sck_pin = Pin('W29') 
+ws_pin = Pin('W16')  
+sd_pin = Pin('Y4')
+
+audio_out = I2S(
+    1, # TODO add constant for this
+    sck=sck_pin, ws=ws_pin, sd=sd_pin, 
+    mode=I2S.TX,
+    bits=WAV_SAMPLE_SIZE_IN_BITS,
+    format=FORMAT,
+    rate=SAMPLE_RATE_IN_HZ,
+    bufferlen = 50000)
+
+if NON_BLOCKING:
+    audio_out.irq(i2s_callback_tx)
+    wait_tx = 0
+
 wav = open(wav_file,'rb')
-pos = wav.seek(44) # advance to first byte of Data section in WAV file
-isStarted = False
+# advance to first byte of Data section in WAV file
+pos = wav.seek(44) 
+
+# allocate sample arrays
+#   memoryview used to reduce heap allocation in while loop
+wav_samples = bytearray(10000)
+wav_samples_mv = memoryview(wav_samples)
 
 print('==========  START PLAYBACK ==========')
+# continuously read audio samples from the WAV file 
+# and write them to an I2S DAC
 while True:
     try:
-        buffer = audio_out.getbuffer()
-        if buffer != None:
-            num_read = wav.readinto(buffer)
-            num_written = audio_out.putbuffer(buffer)
+        num_read = wav.readinto(wav_samples_mv)
+        # end of WAV file?
+        if num_read == 0:
+            # advance to first byte of Data section
+            pos = wav.seek(44) 
+        else:
+            if NON_BLOCKING:
+                wait_tx = 1
+            num_written = audio_out.write(wav_samples_mv[:num_read])
             
-            if isStarted == False:
-                audio_out.start()
-                isStarted = True
-            # end of WAV file?
-            if num_read == 0:
-                # advance to first byte of Data section
-                pos = wav.seek(44) 
-                    
+            # frequent garbage collection is needed to avoid a crash in pyb platforms
+            gc.collect()
+            
+        if NON_BLOCKING:
+            while wait_tx:
+                time.sleep_ms(1)
+
     except (KeyboardInterrupt, Exception) as e:
         print('caught exception {} {}'.format(type(e).__name__, e))
         break
 
 wav.close()
-if uos.uname().machine.find('PYBD') == 0:
-    uos.umount("/sd")
-audio_in.deinit()
+uos.umount("/sd")
 audio_out.deinit()
 print('Done')

@@ -116,7 +116,7 @@ static const DMA_InitTypeDef dma_init_struct_i2s = {
     .MemInc = DMA_MINC_ENABLE,
     .PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD,
     .MemDataAlignment = DMA_MDATAALIGN_HALFWORD,
-    .Mode = DMA_CIRCULAR,//  ,DMA_NORMAL
+    .Mode = DMA_CIRCULAR,
     .Priority = DMA_PRIORITY_LOW,
     #if defined(STM32F4) || defined(STM32F7) || defined(STM32H7)
     .FIFOMode = DMA_FIFOMODE_DISABLE,

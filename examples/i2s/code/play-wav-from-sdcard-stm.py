@@ -1,5 +1,5 @@
 # The MIT License (MIT)
-# Copyright (c) 2020 Mike Teachman
+# Copyright (c) 2021 Mike Teachman
 # https://opensource.org/licenses/MIT
 
 # Purpose:
@@ -7,8 +7,10 @@
 # - write audio samples to an I2S amplifier or DAC module 
 #
 # Sample WAV files in wav_files folder:
-#   "taunt-16k-16bits-mono.wav"
-#   "taunt-16k-16bits-mono-12db.wav" (lower volume version)
+#   "music-16k-16bits-mono.wav"
+#   "music-16k-32bits-mono.wav"
+#   "music-16k-16bits-stereo.wav"
+#   "music-16k-32bits-stereo.wav"
 #
 # Hardware tested:
 # - MAX98357A amplifier module (Adafruit I2S 3W Class D Amplifier Breakout)
@@ -18,14 +20,20 @@
 # the STM32 is reset
 
 import pyb
-import time
 import uos
 from machine import I2S
 from machine import Pin
+import time
+import micropython
+import gc
+micropython.alloc_emergency_exception_buf(100)
+pyb.fault_debug(True)
+
+NON_BLOCKING = False
 
 def i2s_callback(s):
-    #print('callback worked')
-    pass
+    global wait_tx
+    wait_tx = 0
 
 # for the Pyboard D hardware enable external 3.3v output 
 if uos.uname().machine.find('PYBD') == 0:
@@ -47,27 +55,22 @@ SAMPLE_RATE_IN_HZ = 16000
 #     WS -  Y5  (SPI2 NSS)
 #     SD -  Y8  (SPI2 MOSI)
 
-sck_pin = Pin('W29') 
-ws_pin = Pin('W16')  
-sd_pin = Pin('Y4')
-
-buf_1 = bytearray(1024)
-buf_2 = bytearray(1024)
-buf_3 = bytearray(1024)
-buf_4 = bytearray(1024)
-buf_5 = bytearray(1024)
-
-# TODO  define with memoryview?  see what happens with allocation in loop below.  GC?
+sck_pin = Pin('Y6') 
+ws_pin = Pin('Y5')  
+sd_pin = Pin('Y8')
 
 audio_out = I2S(
-    1, # TODO add constant for this
+    2, # TODO add constant for this
     sck=sck_pin, ws=ws_pin, sd=sd_pin, 
     mode=I2S.TX,
     bits=WAV_SAMPLE_SIZE_IN_BITS,
     format=FORMAT,
     rate=SAMPLE_RATE_IN_HZ,
-    buffers = [buf_1, buf_2, buf_3, buf_4, buf_5],
-    callback=i2s_callback)
+    bufferlen=50000)
+
+if NON_BLOCKING:
+    audio_out.irq(i2s_callback)
+    wait_tx = 0
 
 if uos.uname().machine.find('PYBD') == 0:
     wav_file = '/sd/{}'.format(WAV_FILE)
@@ -76,23 +79,32 @@ else:
 
 wav = open(wav_file,'rb')
 wav.seek(44) # advance to first byte of Data section in WAV file
-isStarted = False
+
+# allocate sample array
+#   memoryview used to reduce heap allocation in while loop
+wav_samples = bytearray(10000)
+wav_samples_mv = memoryview(wav_samples)
 
 # continuously read audio samples from the WAV file 
 # and write them to an I2S DAC
 while True:
     try:
-        buffer = audio_out.getbuffer()
-        if buffer != None:
-            num_read = wav.readinto(buffer)
-            num_written = audio_out.putbuffer(buffer)
-            if isStarted == False:
-                audio_out.start()
-                isStarted = True
-            # end of WAV file?
-            if num_read == 0:
-                # advance to first byte of Data section
-                pos = wav.seek(44) 
+        num_read = wav.readinto(wav_samples_mv)
+        # end of WAV file?
+        if num_read == 0:
+            # advance to first byte of Data section
+            pos = wav.seek(44)
+        else:
+            if NON_BLOCKING:
+                wait_tx = 1
+            num_written = audio_out.write(wav_samples_mv[:num_read])
+ 
+            # frequent garbage collection is needed to avoid a crash
+            gc.collect()
+            
+        if NON_BLOCKING:
+            while wait_tx:
+                time.sleep_ms(1)
                     
     except (KeyboardInterrupt, Exception) as e:
         print('caught exception {} {}'.format(type(e).__name__, e))
