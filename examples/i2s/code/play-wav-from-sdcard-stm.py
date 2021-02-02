@@ -29,9 +29,10 @@ import gc
 micropython.alloc_emergency_exception_buf(100)
 pyb.fault_debug(True)
 
-NON_BLOCKING = False
+NON_BLOCKING = True
 
 def i2s_callback(s):
+    print('----------------- cb')
     global wait_tx
     wait_tx = 0
 
@@ -41,8 +42,8 @@ if uos.uname().machine.find('PYBD') == 0:
     uos.mount(pyb.SDCard(), '/sd')
 
 #======= USER CONFIGURATION =======
-WAV_FILE = 'music-16k-32bits-mono.wav'
-WAV_SAMPLE_SIZE_IN_BITS = 32
+WAV_FILE = 'music-16k-16bits-mono.wav'
+WAV_SAMPLE_SIZE_IN_BITS = 16
 FORMAT = I2S.MONO
 SAMPLE_RATE_IN_HZ = 16000
 #======= USER CONFIGURATION =======
@@ -55,12 +56,12 @@ SAMPLE_RATE_IN_HZ = 16000
 #     WS -  Y5  (SPI2 NSS)
 #     SD -  Y8  (SPI2 MOSI)
 
-sck_pin = Pin('Y6') 
-ws_pin = Pin('Y5')  
-sd_pin = Pin('Y8')
+sck_pin = Pin('W29') 
+ws_pin = Pin('W16')  
+sd_pin = Pin('Y4')
 
 audio_out = I2S(
-    2, # TODO add constant for this
+    1, # TODO add constant for this
     sck=sck_pin, ws=ws_pin, sd=sd_pin, 
     mode=I2S.TX,
     bits=WAV_SAMPLE_SIZE_IN_BITS,
@@ -70,7 +71,7 @@ audio_out = I2S(
 
 if NON_BLOCKING:
     audio_out.irq(i2s_callback)
-    wait_tx = 0
+    wait_tx = 1
 
 if uos.uname().machine.find('PYBD') == 0:
     wav_file = '/sd/{}'.format(WAV_FILE)

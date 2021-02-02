@@ -25,7 +25,7 @@ from machine import I2S
 import time
 import gc
 
-NON_BLOCKING = False
+NON_BLOCKING = True
 
 def i2s_callback_tx(i2s):
     global wait_tx
@@ -43,11 +43,13 @@ if uos.uname().machine.find('PYBD') == 0:
 num_channels = {I2S.MONO:1, I2S.STEREO:2}
 
 #======= USER CONFIGURATION =======
-RECORD_TIME_IN_SECONDS = 5
-SAMPLE_RATE_IN_HZ = 16000
+RECORD_TIME_IN_SECONDS = 10
+SAMPLE_RATE_IN_HZ = 22050
 FORMAT = I2S.STEREO
 WAV_SAMPLE_SIZE_IN_BITS = 32
 #======= USER CONFIGURATION =======
+
+# TODO bug exists:  left channel appears on right channel for stereo 32 bits, alternates left and right channels on playback
 
 NUM_CHANNELS = num_channels[FORMAT]
 WAV_SAMPLE_SIZE_IN_BYTES = WAV_SAMPLE_SIZE_IN_BITS // 8
@@ -64,7 +66,6 @@ def create_wav_header(sampleRate, bitsPerSample, num_channels, num_samples):
     o += (datasize + 36).to_bytes(4,'little')                                   # (4byte) File size in bytes excluding this and RIFF marker
     o += bytes("WAVE",'ascii')                                                  # (4byte) File type
     o += bytes("fmt ",'ascii')                                                  # (4byte) Format Chunk Marker
-    o += (16).to_bytes(4,'little')                                              # (4byte) Length of above format data
     o += (1).to_bytes(2,'little')                                               # (2byte) Format type (1 - PCM)
     o += (num_channels).to_bytes(2,'little')                                    # (2byte)
     o += (sampleRate).to_bytes(4,'little')                                      # (4byte)
@@ -106,7 +107,7 @@ audio_in = I2S(
     bits=WAV_SAMPLE_SIZE_IN_BITS,
     format=FORMAT,
     rate=SAMPLE_RATE_IN_HZ,
-    bufferlen = 20000)
+    bufferlen = 50000)
 
 if NON_BLOCKING:
     audio_in.irq(i2s_callback_rx)
@@ -114,7 +115,7 @@ if NON_BLOCKING:
     
 # allocate sample arrays
 #   memoryview used to reduce heap allocation in while loop
-mic_samples = bytearray(2000)
+mic_samples = bytearray(5000)
 mic_samples_mv = memoryview(mic_samples)
 
 num_sample_bytes_written_to_wav = 0
