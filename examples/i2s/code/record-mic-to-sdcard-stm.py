@@ -43,10 +43,10 @@ if uos.uname().machine.find('PYBD') == 0:
 num_channels = {I2S.MONO:1, I2S.STEREO:2}
 
 #======= USER CONFIGURATION =======
-RECORD_TIME_IN_SECONDS = 10
+RECORD_TIME_IN_SECONDS = 60
 SAMPLE_RATE_IN_HZ = 22050
-FORMAT = I2S.STEREO
-WAV_SAMPLE_SIZE_IN_BITS = 32
+FORMAT = I2S.MONO
+WAV_SAMPLE_SIZE_IN_BITS = 16
 #======= USER CONFIGURATION =======
 
 # TODO bug exists:  left channel appears on right channel for stereo 32 bits, alternates left and right channels on playback
@@ -66,6 +66,7 @@ def create_wav_header(sampleRate, bitsPerSample, num_channels, num_samples):
     o += (datasize + 36).to_bytes(4,'little')                                   # (4byte) File size in bytes excluding this and RIFF marker
     o += bytes("WAVE",'ascii')                                                  # (4byte) File type
     o += bytes("fmt ",'ascii')                                                  # (4byte) Format Chunk Marker
+    o += (16).to_bytes(4,'little')                                              # (4byte) Length of above format data
     o += (1).to_bytes(2,'little')                                               # (2byte) Format type (1 - PCM)
     o += (num_channels).to_bytes(2,'little')                                    # (2byte)
     o += (sampleRate).to_bytes(4,'little')                                      # (4byte)
@@ -143,10 +144,10 @@ while num_sample_bytes_written_to_wav < RECORDING_SIZE_IN_BYTES:
         break
     
 wav.close()
-#uos.umount("/sd")
+uos.umount("/sd")
 audio_in.deinit()
 print('==========  DONE RECORDING ==========')
-
+'''
 # ===== PLAYBACK ======
 #     SCK - W29 (SPI1 SCK)
 #     WS -  W16 (SPI1 NSS)
@@ -207,3 +208,4 @@ wav.close()
 uos.umount("/sd")
 audio_out.deinit()
 print('Done')
+'''
