@@ -1,6 +1,6 @@
 /*
  * This file is part of the MicroPython project, http://micropython.org/
- * 
+ *
  * The MIT License (MIT)
  *
  * Copyright (c) 2021 Mike Teachman
@@ -62,6 +62,18 @@ typedef enum {
     MONO   = 0,
     STEREO = 1,
 } machine_i2s_format_t;
+
+// === HOW IT WORKS ===  TODO
+//
+// Blocking
+//
+// Non-Blocking
+//
+// Uasyncio
+//
+// Streaming
+//
+
 
 //  ESP32 buffer formats for write() and readinto() methods:
 
@@ -127,7 +139,7 @@ typedef struct _machine_i2s_obj_t {
     QueueHandle_t          i2s_event_queue;
     volatile TaskHandle_t  client_task_handle;
     uint32_t               dma_buf_len_in_bytes;
-    bool                   async_detected;
+    bool                   asyncio_detected;
 } machine_i2s_obj_t;
 
 typedef enum {
@@ -135,7 +147,7 @@ typedef enum {
     I2S_RX_TRANSFER, 
 } machine_i2s_transfer_type_t;
 
-typedef struct _machine_i2s_buffer_transfer_t {
+typedef struct _machine_i2s_buffer_transfer_t {  // TODO make consistent with Pyboard
     mp_buffer_info_t            bufinfo;
     mp_obj_t                    callback;
     machine_i2s_transfer_type_t type;    
@@ -186,15 +198,6 @@ STATIC void machine_i2s_swap_32_bit_stereo_channels(mp_buffer_info_t *bufinfo) {
     }
 }
 
-STATIC i2s_bits_per_sample_t machine_i2s_get_esp_bits(uint8_t mode, i2s_bits_per_sample_t bits) {
-    if (mode == (I2S_MODE_MASTER | I2S_MODE_TX)) {
-        return bits;
-    } else { // Master Rx
-        // read 32 bit words for microphones 
-        return I2S_BITS_PER_SAMPLE_32BIT;
-    }
-}
-
 STATIC int8_t get_overlay_index(i2s_bits_per_sample_t bits, machine_i2s_format_t format) {
     if (format == MONO) {
         if (bits == I2S_BITS_PER_SAMPLE_16BIT) {
@@ -215,6 +218,15 @@ STATIC int8_t get_overlay_index(i2s_bits_per_sample_t bits, machine_i2s_format_t
     }
 }
 
+STATIC i2s_bits_per_sample_t machine_i2s_get_esp_bits(uint8_t mode, i2s_bits_per_sample_t bits) {
+    if (mode == (I2S_MODE_MASTER | I2S_MODE_TX)) {
+        return bits;
+    } else { // Master Rx
+        // read 32 bit words for microphones
+        return I2S_BITS_PER_SAMPLE_32BIT;
+    }
+}
+
 STATIC i2s_channel_fmt_t machine_i2s_get_esp_format(uint8_t mode, machine_i2s_format_t format) {
     if (mode == (I2S_MODE_MASTER | I2S_MODE_TX)) {
         if (format == MONO) {
@@ -228,7 +240,7 @@ STATIC i2s_channel_fmt_t machine_i2s_get_esp_format(uint8_t mode, machine_i2s_fo
     }
 }
 
-uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buffer_info_t *bufinfo , bool async) {
+uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buffer_info_t *bufinfo , bool asyncio) {
 
     //uint32_t t0 = mp_hal_ticks_us();
 
@@ -248,11 +260,12 @@ uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_
     while ((buf_index < bufinfo->len) && (partial_read == false)) {
         uint32_t num_bytes_read_from_dma = 0;
         //printf("buf_index: %d\n", buf_index);
+        // TODO give "bufinfo" a better name
         uint32_t sample_spaces_remaining_in_buffer = (bufinfo->len - buf_index) / target_frame_size_in_bytes;
         uint32_t num_bytes_to_read_from_dma = MIN(sizeof(self->i2s_read_buffer), 
                                                   sample_spaces_remaining_in_buffer * I2S_RX_FRAME_SIZE_IN_BYTES);  
         TickType_t delay;
-        if (async) {
+        if (asyncio) {
             delay = 0;
         } else {
             delay = portMAX_DELAY;
@@ -280,11 +293,11 @@ uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_
             case ESP_OK:
                 break;
             case ESP_ERR_INVALID_ARG:
-                mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S read:  Parameter error"));
+                mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S read: Parameter error"));
                 break;
             default:
                 // this error not documented in ESP-IDF
-                mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S read:  Undocumented error")); 
+                mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S read: Undocumented error")); 
                 break;
         }
         
@@ -308,7 +321,7 @@ uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_
     //uint32_t t1 = mp_hal_ticks_us();
     //printf("readinto [us]: %d\n", t1-t0);
 
-    if (async && (buf_index < bufinfo->len)) {
+    if (asyncio && (buf_index < bufinfo->len)) {
         // Unable to empty the entire buffer.  This indicates DMA RX buffers are empty
         // clear the I2S event queue to indicate that all DMA RX buffers are empty
         // TODO indicate that race condition is possible in this design, but that is acceptable
@@ -319,7 +332,7 @@ uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_
     return buf_index;
 }    
 
-uint32_t the_one_write_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buffer_info_t *bufinfo, bool async) {
+uint32_t the_one_write_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buffer_info_t *bufinfo, bool asyncio) {
     if ((self->bits == I2S_BITS_PER_SAMPLE_32BIT) && (self->format == STEREO)) {
         machine_i2s_swap_32_bit_stereo_channels(bufinfo);
     }
@@ -328,7 +341,7 @@ uint32_t the_one_write_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buf
     esp_err_t ret;
     
     TickType_t delay;
-    if (async) {
+    if (asyncio) {
         delay = 0;
     } else {
         delay = portMAX_DELAY;
@@ -348,11 +361,10 @@ uint32_t the_one_write_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buf
             break;
     }
 
-    if (async && (num_bytes_written < bufinfo->len)) {
+    if (asyncio && (num_bytes_written < bufinfo->len)) {
         // Unable to empty the entire buffer.  This indicates DMA TX buffers are full
         // clear the I2S event queue to indicate that all DMA TX buffers are full
-        // TODO indicate that race condition is possible in this design, but that is acceptable
-        //printf("++++++++++++++ DMA full, Reset I2S event queue\n");
+        // TODO race condition may exist, might be acceptable, investigate
         xQueueReset(self->i2s_event_queue);
 
         // undo the swap transformation as the buffer has not been completely emptied
@@ -392,6 +404,7 @@ static void i2s_client_task(void *self_in) {
     }
 }
 
+// TODO n_pos_args is not an implementation pattern for MicroPython
 STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
 
     enum {
@@ -402,7 +415,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         ARG_bits,
         ARG_format,
         ARG_rate,
-        ARG_buffer,  // bytes
+        ARG_bufferlen,  // bytes
     };
 
     static const mp_arg_t allowed_args[] = {
@@ -413,7 +426,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         { MP_QSTR_bits,             MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_format,           MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_rate,             MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_buffer,           MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
+        { MP_QSTR_bufferlen,        MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
     };
 
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -464,11 +477,11 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     self->bits = args[ARG_bits].u_int;
     self->format = args[ARG_format].u_int;
     self->rate = args[ARG_rate].u_int;
-    self->buffer = args[ARG_buffer].u_int;
+    self->buffer = args[ARG_bufferlen].u_int;
     self->callback = MP_OBJ_NULL;
 
     self->client_task_handle = NULL;
-    self->async_detected = false;
+    self->asyncio_detected = false;
     
     // TODO convert following into function.  convert from bytes to ESP32 DMA len
     uint32_t dma_buf_len_in_bytes = SIZEOF_DMA_BUFFER_IN_FRAMES;
@@ -512,14 +525,14 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         case ESP_OK:
             break;
         case ESP_ERR_INVALID_ARG:
-            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S driver install:  Parameter error"));
+            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S driver install: Parameter error"));
             break;
         case ESP_ERR_NO_MEM:
-            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S driver install:  Out of memory"));
+            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S driver install: Out of memory"));
             break;
         default:
             // this error not documented in ESP-IDF
-            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S driver install:  Undocumented error")); 
+            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S driver install: Undocumented error")); 
             break;
     }
 
@@ -540,14 +553,14 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         case ESP_OK:
             break;
         case ESP_ERR_INVALID_ARG:
-            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S set pin:  Parameter error"));
+            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S set pin: Parameter error"));
             break;
         case ESP_FAIL:
-            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S set pin:  IO error"));
+            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S set pin: IO error"));
             break;
         default:
             // this error not documented in ESP-IDF
-            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S set pin:  Undocumented error")); 
+            mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S set pin: Undocumented error")); 
             break;
     }
 
@@ -618,7 +631,7 @@ STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint
         return 0;
     }
 
-    if (!self->used) {
+    if (!self->used) {  // TODO needed?  (obj seems to be used if we got this far)
         *errcode = MP_EPERM;
     }
 
@@ -626,6 +639,7 @@ STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint
         *errcode = MP_EPERM;
     }
 
+    // TODO should likely put asyncio first and throw an exception if callback is set (or just ignore the callback)
     if (self->callback != MP_OBJ_NULL) {
         //printf("got a callback\n");
         machine_i2s_buffer_transfer_t buffer_transfer;
@@ -641,7 +655,7 @@ STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint
         bufinfo.buf = (void *)buf_in;
         bufinfo.len = size;
         uint32_t num_bytes_read;
-        if (self->async_detected == true) {  // TODO refactor ... just the true/false are different
+        if (self->asyncio_detected == true) {  // TODO refactor ... just the true/false are different
             num_bytes_read = the_one_readinto_function_to_rule_them_all(self, &bufinfo, true);
             //printf("async, num_bytes_read: %d\n", num_bytes_read);
         } else {
@@ -657,7 +671,7 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
 
     //printf("start stream_write\n");
 
-    if (!self->used) {
+    if (!self->used) {  // TODO see comment on stream_read()
         *errcode = MP_EPERM;
     }
 
@@ -665,6 +679,7 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
         *errcode = MP_EPERM;
     }
 
+    // TODO should likely put asyncio first and throw an exception if callback is set (or just ignore the callback)
     if (self->callback != MP_OBJ_NULL) {
         //printf("got a callback\n");
         machine_i2s_buffer_transfer_t buffer_transfer;
@@ -673,14 +688,14 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
         buffer_transfer.callback = self->callback;
         buffer_transfer.type = I2S_TX_TRANSFER;
         xQueueSend(self->i2s_buffer_transfer_queue, &buffer_transfer, portMAX_DELAY);  // TODO handle error return case
-        return buffer_transfer.bufinfo.len;
+        return buffer_transfer.bufinfo.len;  // TODO return "size" - consistent with pyboard
     } else {
         //printf("no callback\n");
         mp_buffer_info_t bufinfo;
         bufinfo.buf = (void *)buf_in;
         bufinfo.len = size;
         uint32_t num_bytes_written;
-        if (self->async_detected == true) {  // TODO refactor ... just the true/false are different
+        if (self->asyncio_detected == true) {  // TODO refactor ... just the true/false are different
             num_bytes_written = the_one_write_function_to_rule_them_all(self, &bufinfo, true);
             //printf("async, num_bytes_written: %d\n", num_bytes_written);
         } else {
@@ -694,7 +709,7 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
     machine_i2s_obj_t *self = self_in;
     i2s_driver_uninstall(self->id);
-    self->async_detected = false;
+    self->asyncio_detected = false;
     self->used = false;
     
     // TODO kill any FreeRTOS Task for this I2S instance
@@ -703,7 +718,7 @@ STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_i2s_deinit_obj, machine_i2s_deinit);
 
-STATIC mp_obj_t machine_i2s_irq(mp_obj_t self_in, mp_obj_t handler) {
+STATIC mp_obj_t machine_i2s_callback(mp_obj_t self_in, mp_obj_t handler) {
     machine_i2s_obj_t *self = self_in;
     if (handler != mp_const_none && !mp_obj_is_callable(handler)) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid handler"));
@@ -721,7 +736,7 @@ STATIC mp_obj_t machine_i2s_irq(mp_obj_t self_in, mp_obj_t handler) {
 
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_2(machine_i2s_irq_obj, machine_i2s_irq);
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(machine_i2s_callback_obj, machine_i2s_callback);
 
 
 #if MEASURE_COPY_PERFORMANCE
@@ -781,7 +796,7 @@ STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_readinto),        MP_ROM_PTR(&mp_stream_readinto_obj) },
     { MP_ROM_QSTR(MP_QSTR_write),           MP_ROM_PTR(&mp_stream_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_deinit),          MP_ROM_PTR(&machine_i2s_deinit_obj) },
-    { MP_ROM_QSTR(MP_QSTR_irq),             MP_ROM_PTR(&machine_i2s_irq_obj) },
+    { MP_ROM_QSTR(MP_QSTR_callback),        MP_ROM_PTR(&machine_i2s_callback_obj) },
 #if MEASURE_COPY_PERFORMANCE
     { MP_ROM_QSTR(MP_QSTR_copytest),        MP_ROM_PTR(&machine_i2s_copytest_obj) },
 #endif     
@@ -805,7 +820,8 @@ STATIC mp_uint_t machine_i2s_ioctl(mp_obj_t self_in, mp_uint_t request, mp_uint_
     // set a flag indicating that I2S is being used in uasyncio mode
     // note:  assumption that an IO poll from the uasyncio scheduler is the only means
     // to get here
-    self->async_detected = true;
+    // TODO -- above is a bad assumption - what if I2S is being used for methods in the stream protocol write, read, ioctl
+    self->asyncio_detected = true;
 
     if (request == MP_STREAM_POLL) {
         ret = 0;

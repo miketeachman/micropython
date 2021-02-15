@@ -64,12 +64,6 @@
 #define MICROPY_HW_SPI2_MISO (pin_B14) // Y7
 #define MICROPY_HW_SPI2_MOSI (pin_B15) // Y8
 
-// I2S busses
-#define MICROPY_HW_I2S2_NAME MICROPY_HW_SPI2_NAME // "Y"
-#define MICROPY_HW_I2S2_WS   MICROPY_HW_SPI2_NSS  // Y5
-#define MICROPY_HW_I2S2_SCK  MICROPY_HW_SPI2_SCK  // Y6
-#define MICROPY_HW_I2S2_SD   MICROPY_HW_SPI2_MOSI // Y8
-
 // CAN busses
 #define MICROPY_HW_CAN1_NAME "YA"
 #define MICROPY_HW_CAN1_TX   (pin_B9) // Y4
@@ -79,8 +73,8 @@
 #define MICROPY_HW_CAN2_RX   (pin_B12) // Y5
 
 // I2S busses
-#define MICROPY_HW_ENABLE_I2S2      (1)
-#define MICROPY_HW_ENABLE_I2S3      (0)
+#define MICROPY_HW_I2S1             (0)
+#define MICROPY_HW_I2S2             (1)
 
 // USRSW has no pullup or pulldown, and pressing the switch makes the input go low
 #define MICROPY_HW_USRSW_PIN        (pin_B3)

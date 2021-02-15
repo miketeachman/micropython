@@ -49,6 +49,17 @@
 #include "modmachine.h"
 #include "led.h" // For debugging using led_toggle(n)
 
+// Emperical testing show that PyBoard D boards produce distorted audio for both write and read modes
+// of operation. A workaround exists: DMA buffer memory is defined in file scope rather than 
+// on the MicroPython Heap.
+// The PyBoard V1.1 does not have this problem.
+// TODO determine the root cause of the audio problems in the PyBoard D boards
+#if defined (STM32F722xx) || defined (STM32F723xx)
+#define STATIC_DMA_BUFFER 1  // buffer allocated from static memory
+#else
+#define STATIC_DMA_BUFFER 0  // buffer allocated from MicroPython heap
+#endif
+
 // Pyboard V1.0/V1.1:   Two standard I2S interfaces (multiplexed with SPI2 and SPI3) are available
 // Pyboard D SF2W, SF3W:  Three standard I2S interfaces (multiplexed with SPI1, SPI2 and SPI3) are available
 
@@ -131,8 +142,8 @@
 #define MEASURE_COPY_PERFORMANCE 1
 
 #define SIZEOF_DMA_BUFFER_IN_BYTES (256)  // TODO what is the minimal size for acceptable performance?
-#define SIZEOF_HALF_DMA_BUFFER_IN_BYTES (256 / 2)
-#define SIZEOF_NON_BLOCKING_COPY_IN_BYTES (SIZEOF_HALF_DMA_BUFFER_IN_BYTES * 4)
+#define SIZEOF_HALF_DMA_BUFFER_IN_BYTES (SIZEOF_DMA_BUFFER_IN_BYTES / 2)
+#define SIZEOF_NON_BLOCKING_COPY_IN_BYTES (SIZEOF_HALF_DMA_BUFFER_IN_BYTES * 4)  // TODO what is this for ?
 
 typedef enum {
     TOP_HALF    = 0,
@@ -152,9 +163,6 @@ typedef struct _circular_buf_t {
     bool full;
 } circular_buf_t;
 
-/// Handle type, the way users interact with the circular buffer API
-typedef circular_buf_t *cbuf_handle_t;
-
 typedef struct _non_blocking_info_t {
     mp_buffer_info_t            bufinfo;
     uint32_t                    bufindex;
@@ -162,14 +170,18 @@ typedef struct _non_blocking_info_t {
 
 typedef struct _machine_i2s_obj_t {
     mp_obj_base_t           base;
-    mp_int_t                i2s_id;
+    uint8_t                 i2s_id;
     I2S_HandleTypeDef       i2s;
     const dma_descr_t       *tx_dma_descr;
     const dma_descr_t       *rx_dma_descr; 
     DMA_HandleTypeDef       tx_dma;
     DMA_HandleTypeDef       rx_dma;
     mp_obj_t                callback;
+#if STATIC_DMA_BUFFER
+    uint8_t                 *dma_buffer;
+#else
     uint8_t                 dma_buffer[SIZEOF_DMA_BUFFER_IN_BYTES];
+#endif
     pin_obj_t               *sck;
     pin_obj_t               *ws;
     pin_obj_t               *sd;
@@ -178,46 +190,41 @@ typedef struct _machine_i2s_obj_t {
     machine_i2s_format_t    format;
     int32_t                 rate;
     int32_t                 bufferlen;
-    cbuf_handle_t           internal_buffer;  // TODO change to ring buffer
+    circular_buf_t          internal_buffer;  // TODO change to ring buffer
+    uint8_t                 *ring_buffer_storage;  // allocated from MicroPython heap
     bool                    used;
-    bool                    async_detected;
+    bool                    asyncio_detected;
     bool                    non_blocking;
     non_blocking_info_t     non_blocking_info;
 
 } machine_i2s_obj_t;
 
-// TODO:  is this RAM usage unacceptably massive in uPy???  check sizeof() machine_i2s_obj_t versus the norms ....
-// Static object mapping to I2S peripherals
-//   note:  I2S implementation makes use of the following mapping between I2S peripheral and I2S object
+//  I2S implementation mapping:
 //      I2S peripheral 1:  machine_i2s_obj[0]
 //      I2S peripheral 2:  machine_i2s_obj[1]
-STATIC machine_i2s_obj_t machine_i2s_obj[2] = {  //  TODO fix magic number 2  pybv1.1 = 1, pybD = 2
-        [0].used = false,
-        [1].used = false 
-};
+STATIC machine_i2s_obj_t *machine_i2s_obj[2];
 
-// circular buffer implemention
+#if STATIC_DMA_BUFFER
+STATIC uint8_t dma_buffer[2][SIZEOF_DMA_BUFFER_IN_BYTES];
+#endif
+
+// ring buffer implemention
 // Source:  https://github.com/embeddedartistry/embedded-resources/tree/master/examples/c/circular_buffer
 // License:  CC0 1.0 Universal:  https://github.com/embeddedartistry/embedded-resources/blob/master/LICENSE
 
-/// Opaque circular buffer structure
-//typedef struct circular_buf_t circular_buf_t;
+void circular_buf_init(circular_buf_t *cbuf, uint8_t *buffer, size_t size);
+void circular_buf_reset(circular_buf_t *cbuf);
+void circular_buf_put(circular_buf_t *cbuf, uint8_t data);
+int circular_buf_put2(circular_buf_t *cbuf, uint8_t data);
+int circular_buf_get(circular_buf_t *cbuf, uint8_t *data);
+int circular_buf_get16(circular_buf_t *cbuf, uint16_t *data);
+int circular_buf_get32(circular_buf_t *cbuf, uint32_t *data);
+bool circular_buf_empty(circular_buf_t *cbuf);
+bool circular_buf_full(circular_buf_t *cbuf);
+size_t circular_buf_capacity(circular_buf_t *cbuf);
+size_t circular_buf_size(circular_buf_t *cbuf);
 
-
-cbuf_handle_t circular_buf_init(uint8_t *buffer, size_t size);
-void circular_buf_free(cbuf_handle_t cbuf);
-void circular_buf_reset(cbuf_handle_t cbuf);
-void circular_buf_put(cbuf_handle_t cbuf, uint8_t data);
-int circular_buf_put2(cbuf_handle_t cbuf, uint8_t data);
-int circular_buf_get(cbuf_handle_t cbuf, uint8_t *data);
-int circular_buf_get16(cbuf_handle_t cbuf, uint16_t *data);
-int circular_buf_get32(cbuf_handle_t cbuf, uint32_t *data);
-bool circular_buf_empty(cbuf_handle_t cbuf);
-bool circular_buf_full(cbuf_handle_t cbuf);
-size_t circular_buf_capacity(cbuf_handle_t cbuf);
-size_t circular_buf_size(cbuf_handle_t cbuf);
-
-static void advance_pointer(cbuf_handle_t cbuf)
+static void advance_pointer(circular_buf_t *cbuf)
 {
     assert(cbuf);
 
@@ -232,32 +239,23 @@ static void advance_pointer(cbuf_handle_t cbuf)
     cbuf->full = (cbuf->head == cbuf->tail);
 }
 
-static void retreat_pointer(cbuf_handle_t cbuf)
+static void retreat_pointer(circular_buf_t *cbuf)
 {
     assert(cbuf);
     cbuf->full = false;
     cbuf->tail = (cbuf->tail + 1) % cbuf->max;
 }
 
-cbuf_handle_t circular_buf_init(uint8_t* buffer, size_t size)
+void circular_buf_init(circular_buf_t *cbuf, uint8_t* buffer, size_t size)
 {
     assert(buffer && size); // TODO replace all asserts with MicroPython exceptions
-    cbuf_handle_t cbuf = m_new(circular_buf_t, 1);
-    assert(cbuf);
     cbuf->buffer = buffer;
     cbuf->max = size;
     circular_buf_reset(cbuf);
     assert(circular_buf_empty(cbuf));
-    return cbuf;
 }
 
-void circular_buf_free(cbuf_handle_t cbuf)
-{
-    assert(cbuf);
-    free(cbuf);  // TODO find micropython equivalent
-}
-
-void circular_buf_reset(cbuf_handle_t cbuf)
+void circular_buf_reset(circular_buf_t *cbuf)
 {
     assert(cbuf);
     cbuf->head = 0;
@@ -265,7 +263,7 @@ void circular_buf_reset(cbuf_handle_t cbuf)
     cbuf->full = false;
 }
 
-size_t circular_buf_size(cbuf_handle_t cbuf)  // TODO improve function name
+size_t circular_buf_size(circular_buf_t *cbuf)  // TODO improve function name
 {
     assert(cbuf);
     size_t size = cbuf->max;
@@ -284,20 +282,20 @@ size_t circular_buf_size(cbuf_handle_t cbuf)  // TODO improve function name
     return size;
 }
 
-size_t circular_buf_capacity(cbuf_handle_t cbuf)
+size_t circular_buf_capacity(circular_buf_t *cbuf)
 {
     assert(cbuf);
     return cbuf->max;
 }
 
-void circular_buf_put(cbuf_handle_t cbuf, uint8_t data)
+void circular_buf_put(circular_buf_t *cbuf, uint8_t data)
 {
     assert(cbuf && cbuf->buffer);
     cbuf->buffer[cbuf->head] = data;
     advance_pointer(cbuf);
 }
 
-int circular_buf_put2(cbuf_handle_t cbuf, uint8_t data)
+int circular_buf_put2(circular_buf_t *cbuf, uint8_t data)
 {
     int r = -1;
     assert(cbuf && cbuf->buffer);
@@ -311,9 +309,10 @@ int circular_buf_put2(cbuf_handle_t cbuf, uint8_t data)
     return r;
 }
 
-int circular_buf_get(cbuf_handle_t cbuf, uint8_t *data)
+int circular_buf_get(circular_buf_t *cbuf, uint8_t *data)
 {
     assert(cbuf && data && cbuf->buffer);
+
     int r = -1;
     if(!circular_buf_empty(cbuf))
     {
@@ -321,11 +320,11 @@ int circular_buf_get(cbuf_handle_t cbuf, uint8_t *data)
         retreat_pointer(cbuf);
         r = 0;
     }
-
     return r;
 }
 
-int circular_buf_get16(cbuf_handle_t cbuf, uint16_t *data)
+// TODO eliminate this function
+int circular_buf_get16(circular_buf_t *cbuf, uint16_t *data)
 {
     int r = -1;
     uint8_t data8;
@@ -336,7 +335,8 @@ int circular_buf_get16(cbuf_handle_t cbuf, uint16_t *data)
     return r;
 }
 
-int circular_buf_get32(cbuf_handle_t cbuf, uint32_t *data)
+// TODO eliminate this function
+int circular_buf_get32(circular_buf_t *cbuf, uint32_t *data)
 {
     int r = -1;
     uint8_t data8;
@@ -351,13 +351,13 @@ int circular_buf_get32(cbuf_handle_t cbuf, uint32_t *data)
     return r;
 }
 
-bool circular_buf_empty(cbuf_handle_t cbuf)
+bool circular_buf_empty(circular_buf_t *cbuf)
 {
     assert(cbuf);
     return (!cbuf->full && (cbuf->head == cbuf->tail));
 }
 
-bool circular_buf_full(cbuf_handle_t cbuf)
+bool circular_buf_full(circular_buf_t *cbuf)
 {
     assert(cbuf);
     return cbuf->full;
@@ -385,7 +385,6 @@ bool circular_buf_full(cbuf_handle_t cbuf)
 //   where:
 //      LEFT Channel =  0x99, 0xBB, 0x11, 0x22
 //      RIGHT Channel = 0x44, 0x55, 0xAB, 0x77
-
 STATIC void machine_i2s_reformat_32_bit_samples(int32_t *sample, uint32_t num_samples) {
     int16_t sample_ms;
     int16_t sample_ls;
@@ -431,7 +430,7 @@ STATIC int8_t machine_i2s_get_stm_bits(uint16_t mode, int8_t bits) {
     }
 }
 
-uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buffer_info_t *bufinfo , bool async) {
+uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buffer_info_t *bufinfo , bool asyncio) {
     // block until the entire sample buffer can be filled from the internal buffer. Space becomes
     // available in the internal buffer when sample data is copied from DMA.
     
@@ -455,54 +454,79 @@ uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_
     if (self->format == STEREO) {
         target_frame_size_in_bytes *= 2;
     }
+    
+    //printf("target_frame_size_in_bytes: %d\n", target_frame_size_in_bytes);
 
-    uint32_t num_bytes_needed_from_circular_buffer = bufinfo->len * I2S_RX_FRAME_SIZE_IN_BYTES / target_frame_size_in_bytes;
+    // TODO horrible naming
+    uint32_t num_bytes_to_copy_from_ring_buffer_max = bufinfo->len * I2S_RX_FRAME_SIZE_IN_BYTES / target_frame_size_in_bytes;
+    uint32_t num_bytes_to_copy_from_ring_buffer;
     
-    // TODO consider that some bytes in circular buf may be skipped over (so #bytes in circular
-    // buf would be more than #bytes in target buffer)
-    // TODO bug: if size provided buf > size circular bug the readinto() call hangs below
-    // SOLN:  loop, reading from circular buf until provided buf is filled
-    while (num_bytes_needed_from_circular_buffer > circular_buf_size(self->internal_buffer)) {
-        mp_hal_delay_us(1);
-    }
-    
-    uint8_t *target_p = bufinfo->buf;
-    uint8_t overlay_index = get_overlay_index(self->bits, self->format);
-    for (uint32_t i=0; i<num_bytes_needed_from_circular_buffer / I2S_RX_FRAME_SIZE_IN_BYTES; i++) {
-        
-        for (uint32_t j=0; j<I2S_RX_FRAME_SIZE_IN_BYTES; j++) {
-            
-            uint8_t sample;
-            circular_buf_get(self->internal_buffer, &sample);  // TODO eliminate this copy to &sample ?
-            int8_t dma_mapping = i2s_frame_overlay[overlay_index][j];
-            if (dma_mapping != -1) {
-                *(target_p + dma_mapping) = sample;
-            }
+    if (!asyncio) {
+        // TODO consider that some bytes in circular buf may be skipped over (so #bytes in circular
+        // buf would be more than #bytes in target buffer)
+        // TODO bug: if size provided buf > size circular bug the readinto() call hangs below
+        // SOLN:  loop, reading from circular buf until provided buf is filled
+        while (num_bytes_to_copy_from_ring_buffer_max > circular_buf_size(&self->internal_buffer)) {
+            mp_hal_delay_us(1);  // this is needed to avoid the compiler optimizing out the buffer_space_available calc (?)
         }
-        target_p += target_frame_size_in_bytes;
+        num_bytes_to_copy_from_ring_buffer = num_bytes_to_copy_from_ring_buffer_max;
+        //printf("num_bytes_to_copy_from_ring_buffer: %ld\n", num_bytes_to_copy_from_ring_buffer);
+    } else {  // asyncio
+        num_bytes_to_copy_from_ring_buffer = MIN(num_bytes_to_copy_from_ring_buffer_max, circular_buf_size(&self->internal_buffer));
+        printf("num_bytes_to_copy_from_ring_buffer: %ld\n", num_bytes_to_copy_from_ring_buffer);
+    }
+
+    if (num_bytes_to_copy_from_ring_buffer) {
+        uint8_t *target_p = bufinfo->buf;
+        uint8_t overlay_index = get_overlay_index(self->bits, self->format);
+        for (uint32_t i=0; i<num_bytes_to_copy_from_ring_buffer / I2S_RX_FRAME_SIZE_IN_BYTES; i++) {
+            
+            for (uint32_t j=0; j<I2S_RX_FRAME_SIZE_IN_BYTES; j++) {
+
+                uint8_t sample;
+                circular_buf_get(&self->internal_buffer, &sample);  // TODO eliminate this --> copy directly to &sample ?
+                int8_t dma_mapping = i2s_frame_overlay[overlay_index][j];
+                if (dma_mapping != -1) {
+                    *(target_p + dma_mapping) = sample;
+                }
+            }
+            target_p += target_frame_size_in_bytes;
+        }
     }
     
-    return bufinfo->len;
+    return num_bytes_to_copy_from_ring_buffer / I2S_RX_FRAME_SIZE_IN_BYTES * target_frame_size_in_bytes;
 }    
 
 
-uint32_t the_one_write_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buffer_info_t *bufinfo, bool async) {
+uint32_t the_one_write_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buffer_info_t *bufinfo, bool asyncio) {
     // block until the entire sample buffer can be copied to the internal buffer. Space becomes
     // available in the internal buffer when sample data is moved to DMA.
     
+    uint32_t num_bytes_to_copy;
+    //printf("bufinfo->len: %d\n", bufinfo->len);
+
     // TODO add function to circular buffer to get space available
-    uint32_t buffer_space_available = circular_buf_capacity(self->internal_buffer) - circular_buf_size(self->internal_buffer);
-    while (bufinfo->len > buffer_space_available) {
-        buffer_space_available = circular_buf_capacity(self->internal_buffer) - circular_buf_size(self->internal_buffer);
-        mp_hal_delay_us(1);  // this is needed to avoid the compiler optimizing out the buffer_space_available calc (?)
+    uint32_t buffer_space_available = circular_buf_capacity(&self->internal_buffer) - circular_buf_size(&self->internal_buffer);
+
+    if (!asyncio) {
+        while (bufinfo->len > buffer_space_available) {
+            buffer_space_available = circular_buf_capacity(&self->internal_buffer) - circular_buf_size(&self->internal_buffer);
+            mp_hal_delay_us(1);  // this is needed to avoid the compiler optimizing out the buffer_space_available calc (?)
+        }
+        num_bytes_to_copy = bufinfo->len;
+    } else {  // asyncio
+
+        printf("TOWFTRTA buffer_space_available:  %ld\n", buffer_space_available);
+        printf("TOWFTRTA bufinfo->len:  %d\n", bufinfo->len);
+        num_bytes_to_copy = MIN(buffer_space_available, bufinfo->len);
     }
 
-    // enough space available in internal buffer - do the copy
-    for (uint32_t i=0; i<bufinfo->len; i++) {
-        circular_buf_put(self->internal_buffer, ((uint8_t *)bufinfo->buf)[i]);
+    if (num_bytes_to_copy) {
+        for (uint32_t i=0; i<num_bytes_to_copy; i++) {
+            circular_buf_put(&self->internal_buffer, ((uint8_t *)bufinfo->buf)[i]);
+        }
     }
-    
-    return bufinfo->len;
+    return num_bytes_to_copy;
 }
 
 // Simplying assumptions:
@@ -519,11 +543,12 @@ STATIC void machine_i2s_empty_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffe
     }
     
     // when room exists, copy samples into circular buffer 
-    uint32_t buffer_space_available = circular_buf_capacity(self->internal_buffer) - circular_buf_size(self->internal_buffer);
+    uint32_t buffer_space_available = circular_buf_capacity(&self->internal_buffer) - circular_buf_size(&self->internal_buffer);
+    //printf("buffer_space_available: %ld\n", buffer_space_available);
     
     if (buffer_space_available >= SIZEOF_DMA_BUFFER_IN_BYTES/2) {
         for (uint32_t i=0; i<SIZEOF_DMA_BUFFER_IN_BYTES/2; i++) {
-            circular_buf_put(self->internal_buffer, self->dma_buffer[dma_buffer_index++]);
+            circular_buf_put(&self->internal_buffer, self->dma_buffer[dma_buffer_index++]);
         }
     } else {
         //printf("no space\n");
@@ -556,7 +581,7 @@ STATIC void machine_i2s_feed_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffer
         uint16_t *dma_buffer_p = (uint16_t *)&self->dma_buffer[dma_buffer_index];
         for (uint32_t i=0; i<samples_to_copy; i++) {
             uint16_t sample;
-            circular_buf_get16(self->internal_buffer, &sample);  // TODO check ret code 
+            circular_buf_get16(&self->internal_buffer, &sample);  // TODO check ret code 
             dma_buffer_p[i*2] = sample; 
             dma_buffer_p[i*2+1] = sample; 
         }
@@ -565,7 +590,7 @@ STATIC void machine_i2s_feed_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffer
         uint32_t *dma_buffer_p = (uint32_t *)&self->dma_buffer[dma_buffer_index];
         for (uint32_t i=0; i<samples_to_copy; i++) {
             uint32_t sample;
-            circular_buf_get32(self->internal_buffer, &sample);  // TODO check ret code
+            circular_buf_get32(&self->internal_buffer, &sample);  // TODO check ret code
             dma_buffer_p[i*2] = sample;
             dma_buffer_p[i*2+1] = sample;
         }
@@ -573,8 +598,8 @@ STATIC void machine_i2s_feed_dma(machine_i2s_obj_t *self, machine_i2s_dma_buffer
         uint32_t samples_to_copy = SIZEOF_DMA_BUFFER_IN_BYTES/2/4;  // ... TODO:  isn't 16 bit twice this number?
         uint32_t *dma_buffer_p = (uint32_t *)&self->dma_buffer[dma_buffer_index];
         for (uint32_t i=0; i<samples_to_copy; i++) {
-            uint32_t sample;
-            circular_buf_get32(self->internal_buffer, &sample);  // TODO check ret code
+            uint32_t sample=0;
+            circular_buf_get32(&self->internal_buffer, &sample);  // TODO check ret code
             dma_buffer_p[i] = sample;
         }
     }
@@ -625,9 +650,9 @@ void non_blocking_copy_to_buffer (machine_i2s_obj_t *self) {
     uint32_t num_bytes_to_copy_from_ring_buffer = MIN(SIZEOF_NON_BLOCKING_COPY_IN_BYTES, num_bytes_remaining_to_copy_from_ring_buffer);
     //printf("num_bytes_to_copy_from_ring_buffer:  %ld\n", num_bytes_to_copy_from_ring_buffer);
 
-    //printf("circular_buf_size(self->internal_buffer):  %d\n", circular_buf_size(self->internal_buffer));
+    //printf("circular_buf_size(&self->internal_buffer):  %d\n", circular_buf_size(&self->internal_buffer));
 
-    if (circular_buf_size(self->internal_buffer) >= num_bytes_to_copy_from_ring_buffer) {
+    if (circular_buf_size(&self->internal_buffer) >= num_bytes_to_copy_from_ring_buffer) {
         //printf("Copy 'em\n");
 
         uint8_t *target_p = (uint8_t *)self->non_blocking_info.bufinfo.buf + self->non_blocking_info.bufindex;
@@ -637,7 +662,7 @@ void non_blocking_copy_to_buffer (machine_i2s_obj_t *self) {
             for (uint32_t j=0; j<I2S_RX_FRAME_SIZE_IN_BYTES; j++) {
 
                 uint8_t sample;
-                circular_buf_get(self->internal_buffer, &sample);  // TODO eliminate this copy to &sample ?
+                circular_buf_get(&self->internal_buffer, &sample);  // TODO eliminate this copy to &sample ?
                 int8_t dma_mapping = i2s_frame_overlay[overlay_index][j];
                 if (dma_mapping != -1) {
                     *(target_p + dma_mapping) = sample;
@@ -656,29 +681,6 @@ void non_blocking_copy_to_buffer (machine_i2s_obj_t *self) {
         }
     }
 }
-
-#if 0
-static void led_flash_error(int colour, int count) {
-    for(;;) {
-        for (int c=0;c<count;c++) {
-            led_state(colour, 1);
-            HAL_Delay(300);
-            led_state(colour, 0);
-            HAL_Delay(300);
-        }
-        HAL_Delay(2000);
-    }
-}
-
-static void led_flash_info(int colour, int count) {
-    for (int c=0;c<count;c++) {
-        led_state(colour, 1);
-        HAL_Delay(300);
-        led_state(colour, 0);
-        HAL_Delay(300);
-    }
-}
-#endif
 
 // assumes init parameters are set up correctly
 STATIC bool i2s_init(machine_i2s_obj_t *i2s_obj) {
@@ -782,71 +784,21 @@ STATIC bool i2s_init(machine_i2s_obj_t *i2s_obj) {
 #elif defined (STM32F767xx)
 #error I2S not yet supported on the STM32F767xx processor (future)
 #else
-#error I2S does not support this processor
+#error I2S does not supported on this processor
 #endif // STM32F405xx
 
     if (HAL_I2S_Init(&i2s_obj->i2s) == HAL_OK) {
         // Reset and initialize Tx and Rx DMA channels
-
         if (i2s_obj->mode == I2S_MODE_MASTER_RX) {
             // Reset and initialize RX DMA
             dma_invalidate_channel(i2s_obj->rx_dma_descr);
-
             dma_init(&i2s_obj->rx_dma, i2s_obj->rx_dma_descr, DMA_PERIPH_TO_MEMORY, &i2s_obj->i2s);
             i2s_obj->i2s.hdmarx = &i2s_obj->rx_dma;
-#if 0
-            // set I2S Rx DMA interrupt priority
-            if (i2s_obj->i2s_id == 1) {
-                NVIC_SetPriority(DMA1_Stream3_IRQn, (IRQ_PRI_DMA+1));
-                HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
-            } else if (i2s_obj->i2s_id == 2) {
-                //NVIC_SetPriority(DMA2_Stream3_IRQn, (IRQ_PRI_DMA+1));
-                //NVIC_SetPriority(DMA1_Stream3_IRQn, (IRQ_PRI_DMA+1)); // lower DMA priority
-                HAL_NVIC_EnableIRQ(DMA2_Stream3_IRQn);
-            } else {
-                // invalid i2s_id number; shouldn't get here as i2s object should not
-                // have been created without setting a valid i2s instance number
-                return false;
-            }
-#endif
         } else {  // I2S_MODE_MASTER_TX
             // Reset and initialize TX DMA
             dma_invalidate_channel(i2s_obj->tx_dma_descr);
-
             dma_init(&i2s_obj->tx_dma, i2s_obj->tx_dma_descr, DMA_MEMORY_TO_PERIPH, &i2s_obj->i2s);
             i2s_obj->i2s.hdmatx = &i2s_obj->tx_dma;
-
-#if 0
-            // Workaround fix for streaming methods...
-            // For streaming methods with a file based stream, I2S DMA IRQ priority must be lower than the SDIO DMA IRQ priority.
-            // Explanation:
-            //      i2s_stream_handler() is called in the I2S DMA IRQ handler context.
-            //      SD Card reads (SDIO peripheral) are called in i2s_stream_handler() using DMA.
-            //      When a block of SD card data is finished being read the
-            //      SDIO DMA IRQ handler is never run because the I2S DMA IRQ handler is currently running
-            //      and both IRQs have the same NVIC priority - as setup in dma_init().
-            //      The end result is that i2s_stream_handler() gets "stuck" in an endless loop, in sdcard_wait_finished().
-            //      This happens on the 2nd call to i2s_stream_handler().
-            // The following two lines are a workaround to correct this problem.
-            // When the priority of SDIO DMA IRQ is greater than
-            // I2S DMA IRQ the SDIO DMA IRQ handler will interrupt the I2S DMA IRQ handler, allowing sdcard_wait_finished()
-            // to complete.  Lower number implies higher interrupt priority
-            // TODO figure out a more elegant way to solve this problem.
-            // Investigate:  use the 1/2 complete DMA callback to execute stream read()
-
-            // set I2S Tx DMA interrupt priority
-            if (i2s_obj->i2s_id == 1) {
-                NVIC_SetPriority(DMA2_Stream5_IRQn, (IRQ_PRI_DMA+1));
-                HAL_NVIC_EnableIRQ(DMA2_Stream5_IRQn);
-            } else if (i2s_obj->i2s_id == 2) {
-                NVIC_SetPriority(DMA1_Stream4_IRQn, (IRQ_PRI_DMA+1));
-                HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
-            } else {
-                // invalid i2s_id number; shouldn't get here as i2s object should not
-                // have been created without setting a valid i2s instance number
-                return false;
-            }
-#endif
         }
         return true;
     } else {
@@ -864,9 +816,11 @@ void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s) {
     // TODO refactor 1/2 and complete callback functions to call a single function
     machine_i2s_obj_t *self;
     if (hi2s->Instance == I2S1) {
-        self = &(machine_i2s_obj)[0];
+        self = machine_i2s_obj[0];
+        //printf("RxCplt obj 0:  self 0x%lx\n", (uint32_t)self);
     } else {
-        self = &(machine_i2s_obj)[1];
+        self = machine_i2s_obj[1];
+        //printf("RxCplt obj 1:  self 0x%lx\n", (uint32_t)self);
     }
     
     // bottom half of buffer now filled, 
@@ -884,9 +838,11 @@ void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s) {
 void HAL_I2S_RxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
     machine_i2s_obj_t *self;
     if (hi2s->Instance == I2S1) {
-        self = &(machine_i2s_obj)[0];
+        self = machine_i2s_obj[0];
+        //printf("RxHalfCplt obj 0:  self 0x%lx\n", (uint32_t)self);
     } else {
-        self = &(machine_i2s_obj)[1];
+        self = machine_i2s_obj[1];
+        //printf("RxHalfCplt obj 1:  self 0x%lx\n", (uint32_t)self);
     }
     
     // top half of buffer now filled,
@@ -903,18 +859,25 @@ void HAL_I2S_RxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
 
 void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
     machine_i2s_obj_t *self;
+    
     if (hi2s->Instance == I2S1) {
-        self = &(machine_i2s_obj)[0];
+        self = machine_i2s_obj[0];
     } else {
-        self = &(machine_i2s_obj)[1];
+        self = machine_i2s_obj[1];
     }
     
+    //uint32_t ticks_now_us = mp_hal_ticks_us();
+    //uint32_t delta = ticks_now_us - self->junk_complete_prev;
+    //if (delta > 2010) printf("C delta [us]:  %ld\n", delta);
+    //if (delta < 1990) printf("C delta [us]:  %ld\n", delta);
+    //printf("C delta [us]:  %ld\n", delta);
+
     // TODO refactor in both Tx callbacks, single function
     if (self->non_blocking) {
         // copy audio samples from supplied buffer into internal buffer
         // TODO add function to circular buffer to get space available
         // TODO buffer_space_available is a bad variable name as it's related to circular buffer
-        uint32_t buffer_space_available = circular_buf_capacity(self->internal_buffer) - circular_buf_size(self->internal_buffer);
+        uint32_t buffer_space_available = circular_buf_capacity(&self->internal_buffer) - circular_buf_size(&self->internal_buffer);
         //printf("buffer_space_available: %ld\n", buffer_space_available);
 
         uint32_t num_bytes_remaining_to_copy = self->non_blocking_info.bufinfo.len - self->non_blocking_info.bufindex;
@@ -929,7 +892,7 @@ void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
             //uint32_t t0 = mp_hal_ticks_us();
 
             for (uint32_t i=0; i<num_bytes_to_copy; i++) {
-                circular_buf_put(self->internal_buffer,
+                circular_buf_put(&self->internal_buffer,
                                  ((uint8_t *)self->non_blocking_info.bufinfo.buf)[self->non_blocking_info.bufindex + i]);
             }
 
@@ -949,20 +912,28 @@ void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
     // bottom half of buffer now emptied, 
     // safe to fill the bottom half while the top half of buffer is being emptied
     machine_i2s_feed_dma(self, BOTTOM_HALF);  // TODO check with =S= vs uPy coding rules.  is machine_i2s prefix really needed for STATIC?
+
+    //self->junk_complete_prev = ticks_now_us;
 }
 
 void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
     machine_i2s_obj_t *self;
     if (hi2s->Instance == I2S1) {
-        self = &(machine_i2s_obj)[0];
+        self = machine_i2s_obj[0];
     } else {
-        self = &(machine_i2s_obj)[1];
+        self = machine_i2s_obj[1];
     }
     
+    //uint32_t ticks_now_us = mp_hal_ticks_us();
+    //uint32_t delta = ticks_now_us - self->junk_half_prev;
+    //if (delta > 2010) printf("H delta [us]:  %ld\n", delta);
+    //if (delta < 1990) printf("H delta [us]:  %ld\n", delta);
+    //printf("H delta [us]:  %ld\n", delta);
+
     if (self->non_blocking) {
         // copy audio samples from supplied buffer into internal buffer
         // TODO add function to circular buffer to get space available
-        uint32_t buffer_space_available = circular_buf_capacity(self->internal_buffer) - circular_buf_size(self->internal_buffer);
+        uint32_t buffer_space_available = circular_buf_capacity(&self->internal_buffer) - circular_buf_size(&self->internal_buffer);
         //printf("buffer_space_available: %ld\n", buffer_space_available);
 
         uint32_t num_bytes_remaining_to_copy = self->non_blocking_info.bufinfo.len - self->non_blocking_info.bufindex;
@@ -977,7 +948,7 @@ void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
             //uint32_t t0 = mp_hal_ticks_us();
 
             for (uint32_t i=0; i<num_bytes_to_copy; i++) {
-                circular_buf_put(self->internal_buffer,
+                circular_buf_put(&self->internal_buffer,
                                  ((uint8_t *)self->non_blocking_info.bufinfo.buf)[self->non_blocking_info.bufindex + i]);
             }
 
@@ -997,6 +968,8 @@ void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
     // top half of buffer now emptied, 
     // safe to fill the top half while the bottom half of buffer is being emptied
     machine_i2s_feed_dma(self, TOP_HALF);  // TODO check with =S= vs uPy coding rules.  is machine_i2s prefix really needed for STATIC?
+
+    //self->junk_half_prev = ticks_now_us;
 }
 
 // TODO n_pos_args is not an implementation pattern for MicroPython
@@ -1027,7 +1000,6 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_pos_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
     
-    // set the I2S configuration values
     memset(&self->i2s, 0, sizeof(self->i2s));
     
     //
@@ -1076,7 +1048,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     
     // is Bits valid?
     int8_t i2s_bits_per_sample = -1;
-    // TODO add 24 bits -- audio folks will expect to see this
+    // TODO add 24 bit support -- diehard audio folks will expect to see this
     if (args[ARG_bits].u_int == 16) { i2s_bits_per_sample = I2S_DATAFORMAT_16B; }
     else if (args[ARG_bits].u_int == 32) { i2s_bits_per_sample = I2S_DATAFORMAT_32B; }
     else { 
@@ -1092,12 +1064,13 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     // is Sample Rate valid?
     // No validation done:  TODO can it be validated?  multiple of 8 bytes?
-    
+    // TODO  round stack size down to a multiple of the I2S frame size
     // allocate an internal sample buffer
     int32_t internal_buffer_len = args[ARG_bufferlen].u_int;
     if (internal_buffer_len > 0) {
         uint8_t *buffer = m_new(uint8_t, internal_buffer_len);
-        self->internal_buffer = circular_buf_init(buffer, internal_buffer_len);
+        self->ring_buffer_storage = buffer;
+        circular_buf_init(&self->internal_buffer, buffer, internal_buffer_len);
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("Buffer length is not valid"));
     }
@@ -1110,7 +1083,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     self->format = i2s_format;
     self->rate = args[ARG_rate].u_int;
     self->callback = MP_OBJ_NULL;
-    self->async_detected = false;
+    self->asyncio_detected = false;
     self->non_blocking = false;
     
     I2S_InitTypeDef *init = &self->i2s.Init;
@@ -1130,6 +1103,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     self->used = true;
     
     // start DMA.  DMA is configured to run continuously, using a circular buffer configuration
+    // see "How it works" at the top of file
     uint16_t number_of_samples = 0;
     if (init->DataFormat == I2S_DATAFORMAT_16B) {
         number_of_samples = SIZEOF_DMA_BUFFER_IN_BYTES / 2;
@@ -1207,27 +1181,23 @@ STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
 //     WS -    PA4 / ,  PA15  / --                        (SPI3 NSS)
 //     SD -    PB5 / --, PC12   / --,   PD6/ --,   / --   (SPI3 MOSI)
 
-
-//
-// The I2S3 port is disabled by default on the pyboard, as its pins would
-// conflict with the SD Card and other pyboard functions.
-//
 STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_args, size_t n_kw_args, const mp_obj_t *args) {
     mp_arg_check_num(n_pos_args, n_kw_args, 1, MP_OBJ_FUN_ARGS_MAX, true);
+    uint8_t i2s_id = mp_obj_get_int(args[0]);
+    machine_i2s_obj_t *self = m_new_obj(machine_i2s_obj_t);
 
-    machine_i2s_obj_t *self;
-    
-    // note: it is safe to assume that the arg pointer below references a positional argument because the arg check above
-    //       guarantees that at least one positional argument has been provided
-    uint8_t i2s_id = mp_obj_get_int(args[0]);  // TODO i2s_id has values 1,2,3 for STM32 ...different than ESP32 e.g.  0,1
-    if (i2s_id == 1) { // TODO fix magic number 
-        self = &machine_i2s_obj[0];
-    } else if (i2s_id == 2) { // TODO fix magic number 
-        self = &machine_i2s_obj[1];
+    if(0) {
+#if MICROPY_HW_ENABLE_I2S1
+    } else if (i2s_id == 1) {
+        machine_i2s_obj[0] = self;
+#endif
+#if MICROPY_HW_ENABLE_I2S2
+    } else if (i2s_id == 2) {
+        machine_i2s_obj[1] = self;
+#endif
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("I2S ID is not valid"));
     }
-
     self->base.type = &machine_i2s_type;
     self->i2s_id = i2s_id;
 
@@ -1235,6 +1205,10 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     if (self->used) {
         mp_raise_ValueError(MP_ERROR_TEXT("I2S port is already in use"));
     }
+    
+#if STATIC_DMA_BUFFER
+    self->dma_buffer = &(dma_buffer[i2s_id - 1][0]);
+#endif
 
     mp_map_t kw_args;
     mp_map_init_fixed_table(&kw_args, n_kw_args, args + n_pos_args);
@@ -1267,6 +1241,12 @@ STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint
         *errcode = MP_EPERM;
     }
 
+    // TODO consider more intuitive flow
+    //  if non-blocking
+    //  else if blocking
+    //  else if asyncio
+    //  else error
+
     if (self->callback != MP_OBJ_NULL) {
         // callback set indicates non-blocking read
         //printf("=========== non-blocking read ==========\n");
@@ -1280,9 +1260,9 @@ STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint
         bufinfo.buf = (void *)buf_in;
         bufinfo.len = size;
         uint32_t num_bytes_read;
-        if (self->async_detected == true) {  // TODO refactor ... just the true/false are different
+        if (self->asyncio_detected == true) {  // TODO refactor ... just the true/false are different
             num_bytes_read = the_one_readinto_function_to_rule_them_all(self, &bufinfo, true);
-            //printf("async, num_bytes_read: %d\n", num_bytes_read);
+            printf("async, num_bytes_read: %ld\n", num_bytes_read);
         } else {
             num_bytes_read = the_one_readinto_function_to_rule_them_all(self, &bufinfo, false);
             //printf("non-async, num_bytes_read: %ld\n", num_bytes_read);
@@ -1302,6 +1282,12 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
         *errcode = MP_EPERM;
     }
 
+    // TODO consider more intuitive flow
+    //  if non-blocking
+    //  else if blocking
+    //  else if asyncio
+    //  else error
+
     if (self->callback != MP_OBJ_NULL) {
         // callback set indicates non-blocking write
         //printf("=========== non-blocking write ==========\n");
@@ -1315,9 +1301,9 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
         bufinfo.buf = (void *)buf_in;
         bufinfo.len = size;
         uint32_t num_bytes_written;
-        if (self->async_detected == true) {  // TODO refactor ... just the true/false are different
+        if (self->asyncio_detected == true) {  // TODO refactor ... just the true/false are different
             num_bytes_written = the_one_write_function_to_rule_them_all(self, &bufinfo, true);
-            //printf("async, num_bytes_written: %d\n", num_bytes_written);
+            printf("async, num_bytes_written: %ld\n", num_bytes_written);
         } else {
             num_bytes_written = the_one_write_function_to_rule_them_all(self, &bufinfo, false);
             //printf("non-async, num_bytes_written: %d\n", num_bytes_written);
@@ -1328,13 +1314,12 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
 
 
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
+    
     machine_i2s_obj_t *self = self_in;
-    if (self->used) {
-        dma_deinit(self->tx_dma_descr);
-        dma_deinit(self->rx_dma_descr);
-        HAL_I2S_DeInit(&self->i2s);
-        self->used = false;
-    }
+    
+    dma_deinit(self->tx_dma_descr);
+    dma_deinit(self->rx_dma_descr);
+    HAL_I2S_DeInit(&self->i2s);
     
     if (self->i2s.Instance == I2S1) {
         __SPI1_FORCE_RESET();
@@ -1345,12 +1330,16 @@ STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
         __SPI2_RELEASE_RESET();
         __SPI2_CLK_DISABLE();
     }
-
+    
+    if (self->ring_buffer_storage) {
+        m_free(self->ring_buffer_storage);
+    }
+    
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_i2s_deinit_obj, machine_i2s_deinit);
 
-STATIC mp_obj_t machine_i2s_irq(mp_obj_t self_in, mp_obj_t handler) {
+STATIC mp_obj_t machine_i2s_callback(mp_obj_t self_in, mp_obj_t handler) {
     machine_i2s_obj_t *self = self_in;
     if (handler != mp_const_none && !mp_obj_is_callable(handler)) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid handler"));
@@ -1365,7 +1354,7 @@ STATIC mp_obj_t machine_i2s_irq(mp_obj_t self_in, mp_obj_t handler) {
 
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_2(machine_i2s_irq_obj, machine_i2s_irq);
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(machine_i2s_callback_obj, machine_i2s_callback);
 
 #if MEASURE_COPY_PERFORMANCE
 STATIC mp_obj_t machine_i2s_copytest(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -1424,7 +1413,7 @@ STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_readinto),        MP_ROM_PTR(&mp_stream_readinto_obj) },
     { MP_ROM_QSTR(MP_QSTR_write),           MP_ROM_PTR(&mp_stream_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_deinit),          MP_ROM_PTR(&machine_i2s_deinit_obj) },
-    { MP_ROM_QSTR(MP_QSTR_irq),             MP_ROM_PTR(&machine_i2s_irq_obj) },
+    { MP_ROM_QSTR(MP_QSTR_callback),        MP_ROM_PTR(&machine_i2s_callback_obj) },
     
 #if MEASURE_COPY_PERFORMANCE
     { MP_ROM_QSTR(MP_QSTR_copytest),       MP_ROM_PTR(&machine_i2s_copytest_obj) },
@@ -1441,55 +1430,39 @@ STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
 MP_DEFINE_CONST_DICT(machine_i2s_locals_dict, machine_i2s_locals_dict_table);
 
 STATIC mp_uint_t machine_i2s_ioctl(mp_obj_t self_in, mp_uint_t request, mp_uint_t arg, int *errcode) {
-#if 0    
     machine_i2s_obj_t *self = self_in;
-#endif    
     mp_uint_t ret;
     mp_uint_t flags = arg;
-#if 0
     //printf("ioctl() poll\n");
     // set a flag indicating that I2S is being used in uasyncio mode
     // note:  assumption that an IO poll from the uasyncio scheduler is the only means
     // to get here
-    self->async_detected = true;  // TODO find a better mechanism to detect asyncio
-#endif
+    self->asyncio_detected = true;  // TODO find a better mechanism to detect asyncio
+
+    //printf("ioctl delta last run [us]:  %ld\n", ticks_now_us - self->junk_t0);
+
+    //printf("ioctl\n");
+
     if (request == MP_STREAM_POLL) {
         ret = 0;
 
         if (flags & MP_STREAM_POLL_RD) {
-#if 0
-            i2s_event_t i2s_event;
-
-            // check event queue to determine if a DMA buffer has been filled
-            // (which is a indication that at least one DMA buffer is available to be read)
-            // note:  timeout = 0 so the call is non-blocking
-            if(xQueueReceive(self->i2s_event_queue, &i2s_event, 0)) {
-                if (i2s_event.type == I2S_EVENT_RX_DONE) {
-                    //printf("ioctl RX EVENT\n");
-                    // getting here means that at least one DMA buffer is now full
-                    // indicate that data can be read from the stream
-                    ret |= MP_STREAM_POLL_RD;
-                }
+            // check ring buffer to determine if there is any sample data to read
+            if (circular_buf_size(&self->internal_buffer) > 5000) {
+                //printf("ioctl RD circular_buf_size(&self->internal_buffer): %d\n", circular_buf_size(&self->internal_buffer));
+                ret |= MP_STREAM_POLL_RD;
             }
-#endif            
         }
 
         if (flags & MP_STREAM_POLL_WR) {
-#if 0
-            i2s_event_t i2s_event;
-
-            // check event queue to determine if a DMA buffer has been emptied
-            // (which is a indication that at least one DMA buffer is available to be written)
-            // note:  timeout = 0 so the call is non-blocking
-            if(xQueueReceive(self->i2s_event_queue, &i2s_event, 0)) {
-                if (i2s_event.type == I2S_EVENT_TX_DONE) {
-                    //printf("ioctl TX EVENT\n");
-                    // getting here means that at least one DMA buffer is now empty
-                    // indicate that data can be written to the stream
-                    ret |= MP_STREAM_POLL_WR;
-                }
+            // check ring buffer to determine if there is any space to write sample data
+            int32_t buffer_space_available = circular_buf_capacity(&self->internal_buffer) - circular_buf_size(&self->internal_buffer);
+            //printf("ioctl buffer_space_available: %ld\n", buffer_space_available);
+            //if(!circular_buf_full(&self->internal_buffer)) {
+            //printf("ioctl WR buffer_space_available: %ld\n", buffer_space_available);
+            if (buffer_space_available >= 5000) {
+                ret |= MP_STREAM_POLL_WR;
             }
-#endif            
         }
     } else {
         *errcode = MP_EINVAL;
