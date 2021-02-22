@@ -516,8 +516,8 @@ uint32_t the_one_write_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buf
         num_bytes_to_copy = bufinfo->len;
     } else {  // asyncio
 
-        printf("TOWFTRTA buffer_space_available:  %ld\n", buffer_space_available);
-        printf("TOWFTRTA bufinfo->len:  %d\n", bufinfo->len);
+        //printf("TOWFTRTA buffer_space_available:  %ld\n", buffer_space_available);
+        //printf("TOWFTRTA bufinfo->len:  %d\n", bufinfo->len);
         num_bytes_to_copy = MIN(buffer_space_available, bufinfo->len);
     }
 
@@ -1262,7 +1262,7 @@ STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint
         uint32_t num_bytes_read;
         if (self->asyncio_detected == true) {  // TODO refactor ... just the true/false are different
             num_bytes_read = the_one_readinto_function_to_rule_them_all(self, &bufinfo, true);
-            printf("async, num_bytes_read: %ld\n", num_bytes_read);
+            //printf("async, num_bytes_read: %ld\n", num_bytes_read);
         } else {
             num_bytes_read = the_one_readinto_function_to_rule_them_all(self, &bufinfo, false);
             //printf("non-async, num_bytes_read: %ld\n", num_bytes_read);
@@ -1303,7 +1303,7 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
         uint32_t num_bytes_written;
         if (self->asyncio_detected == true) {  // TODO refactor ... just the true/false are different
             num_bytes_written = the_one_write_function_to_rule_them_all(self, &bufinfo, true);
-            printf("async, num_bytes_written: %ld\n", num_bytes_written);
+            //printf("async, num_bytes_written: %ld\n", num_bytes_written);
         } else {
             num_bytes_written = the_one_write_function_to_rule_them_all(self, &bufinfo, false);
             //printf("non-async, num_bytes_written: %d\n", num_bytes_written);
@@ -1460,7 +1460,7 @@ STATIC mp_uint_t machine_i2s_ioctl(mp_obj_t self_in, mp_uint_t request, mp_uint_
             //printf("ioctl buffer_space_available: %ld\n", buffer_space_available);
             //if(!circular_buf_full(&self->internal_buffer)) {
             //printf("ioctl WR buffer_space_available: %ld\n", buffer_space_available);
-            if (buffer_space_available >= 5000) {
+            if (buffer_space_available) {
                 ret |= MP_STREAM_POLL_WR;
             }
         }

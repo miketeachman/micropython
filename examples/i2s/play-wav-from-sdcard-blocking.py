@@ -9,37 +9,6 @@
 #   a keyboard interrupt is detected or the board is reset
 # - the write() method blocks until the entire sample buffer is written to I2S
 #
-# Sample WAV files in examples/i2s folder:
-#   "music-16k-16bits-mono.wav"  (16,000 samples/sec, 16 bit samples, mono)
-#   "music-16k-32bits-mono.wav"
-#   "music-16k-16bits-stereo.wav"
-#   "music-16k-32bits-stereo.wav"
-#
-# Boards tested:
-# - Pyboard V1.1
-# - Pyboard D SF2W
-# - Lolin D32 Pro
-# - Lolin D32 with external SD Card module
-#
-# DAC hardware tested:
-# - MAX98357A amplifier module (Adafruit I2S 3W Class D Amplifier Breakout)
-# - PCM5102 stereo DAC module
-#
-# --- MIC on PyBoard V1.1 and PyBoard D
-#     SCK - Y6  (SPI2 SCK)
-#     WS -  Y5  (SPI2 NSS)
-#     SD -  Y8  (SPI2 MOSI)
-#
-# --- DAC on PyBoard D
-#     SCK - W29 (SPI1 SCK)
-#     WS -  W16 (SPI1 NSS)
-#     SD -  Y4  (SPI1 MOSI)
-#
-# --- DAC on PyBoard V1.1 ---
-#     SCK - Y9  (SPI2 SCK)
-#     WS -  Y4  (SPI2 NSS)
-#     SD -  X22 (SPI2 MOSI)
-
 import gc
 import time
 from machine import I2S
@@ -57,7 +26,7 @@ elif uos.uname().machine.find('ESP32') == 0:
     sd = SDCard(slot=3, sck=Pin(18), mosi=Pin(23), miso=Pin(19), cs=Pin(4))
     uos.mount(sd, '/sd')
 else:
-    print('Warning: script not tested with this board')    
+    print('Warning: program not tested with this board')    
 
 gc.collect()
 
@@ -69,9 +38,9 @@ SAMPLE_RATE_IN_HZ = 16000
 #======= AUDIO CONFIGURATION =======
 
 #======= I2S CONFIGURATION =======
-sck_pin = Pin('W29') 
-ws_pin = Pin('W16')  
-sd_pin = Pin('Y4')
+sck_pin = Pin(33) 
+ws_pin = Pin(25)  
+sd_pin = Pin(32)
 I2S_ID = 1
 #======= I2S CONFIGURATION =======
 
@@ -115,5 +84,5 @@ if uos.uname().machine.find('PYBD') == 0:
 if uos.uname().machine.find('ESP32') == 0:
     uos.umount('/sd')
     sd.deinit()
-#audio_out.deinit()  
+audio_out.deinit()  
 print('Done')  

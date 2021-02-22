@@ -8,44 +8,8 @@
 # - the WAV file will play continuously in a loop until 
 #   a keyboard interrupt is detected or the board is reset
 # - the write() method is non-blocking.  A callback() method sets a callback function
-#   that is called when all the entire buffer has been written to the I2S peripheral
+#   that is called when the entire buffer has been written to the I2S peripheral
 #
-# Sample WAV files in examples/i2s folder:
-#   "music-16k-16bits-mono.wav"  (16,000 samples/sec, 16 bit samples, mono)
-#   "music-16k-32bits-mono.wav"
-#   "music-16k-16bits-stereo.wav"
-#   "music-16k-32bits-stereo.wav"
-#
-# Boards tested:
-# - Pyboard V1.1
-# - Pyboard D SF2W
-# - Lolin D32 Pro
-# - Lolin D32 with external SD Card module
-#
-# DAC hardware tested:
-# - MAX98357A amplifier module (Adafruit I2S 3W Class D Amplifier Breakout)
-# - PCM5102 stereo DAC module
-#
-# --- MIC on PyBoard V1.1 and PyBoard D
-#     SCK - Y6  (SPI2 SCK)
-#     WS -  Y5  (SPI2 NSS)
-#     SD -  Y8  (SPI2 MOSI)  TODO check  MISO?
-#
-# --- DAC on PyBoard D
-#     SCK - W29 (SPI1 SCK)
-#     WS -  W16 (SPI1 NSS)
-#     SD -  Y4  (SPI1 MOSI)  TODO check  MISO
-#
-# --- DAC on PyBoard V1.1 ---
-#     SCK - Y9  (SPI2 SCK)
-#     WS -  Y4  (SPI2 NSS)
-#     SD -  X22 (SPI2 MOSI)  TODO check  MISO
-#
-# --- DAC on ESP32 ---
-#     SCK - 33  (SPI1 or SP2)
-#     WS -  25  (SPI1 or SP2)
-#     SD -  32  (SPI1 or SP2)
-
 
 import gc
 import time
@@ -70,7 +34,7 @@ elif uos.uname().machine.find('ESP32') == 0:
     sd = SDCard(slot=3, sck=Pin(18), mosi=Pin(23), miso=Pin(19), cs=Pin(4))
     uos.mount(sd, '/sd')
 else:
-    print('Warning: script not tested with this board')    
+    print('Warning: program not tested with this board')    
 
 gc.collect()
 
@@ -96,7 +60,7 @@ def i2s_callback(arg):
         num_written = audio_out.write(silence)
     elif state == PAUSE:
         num_written = audio_out.write(silence)
-    else: # STOP
+    elif state == STOP:
         # cleanup 
         wav.close()
         if uos.uname().machine.find('PYBD') == 0:
@@ -106,6 +70,8 @@ def i2s_callback(arg):
             sd.deinit()
         audio_out.deinit() 
         print('Done')  
+    else:
+        print('Not a valid state.  State ignored')
           
 #======= USER CONFIGURATION =======
 WAV_FILE = 'music-16k-16bits-mono.wav'
@@ -115,10 +81,10 @@ SAMPLE_RATE_IN_HZ = 16000
 #======= USER CONFIGURATION =======
 
 #======= I2S CONFIGURATION =======
-sck_pin = Pin('Y9') 
-ws_pin = Pin('Y4')  
-sd_pin = Pin('X22')
-I2S_ID = 2
+sck_pin = Pin(33) 
+ws_pin = Pin(25)  
+sd_pin = Pin(32)
+I2S_ID = 1
 #======= I2S CONFIGURATION =======
 
 audio_out = I2S(
@@ -154,5 +120,8 @@ time.sleep(10)
 print("pausing playback for 10s")
 state = PAUSE
 time.sleep(10)
-print("resuming playback")
+print("resuming playback for 15s")
 state = RESUME
+time.sleep(15)
+print("stopping playback")
+state = STOP
