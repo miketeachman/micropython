@@ -24,6 +24,7 @@
  * THE SOFTWARE.
  */
 
+// TODO review need for all headers
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -123,7 +124,7 @@ typedef enum {
 
 typedef struct _machine_i2s_obj_t {
     mp_obj_base_t base;
-    i2s_port_t id;
+    i2s_port_t i2s_id;
     int8_t sck;
     int8_t ws;
     int8_t sd;
@@ -179,15 +180,15 @@ STATIC machine_i2s_obj_t machine_i2s_obj[I2S_NUM_MAX] = {
 //     L_0-7 is the least significant byte of the 32 bit sample in the Left channel
 //     L_24-31 is the most significant byte of the 32 bit sample in the Left channel
 //
-//   wav_samples[] =  [0x44, 0x55, 0xAB, 0x77, 0x99, 0xBB, 0x11, 0x22] = [Left channel, Right channel]
-//   i2s_samples[] =  [0x99, 0xBB, 0x11, 0x22, 0x44, 0x55, 0xAB, 0x77] = [Right channel,  Left channel]
+//   wav_samples[] =  [0x99, 0xBB, 0x11, 0x22, 0x44, 0x55, 0xAB, 0x77] = [Left channel, Right channel]
+//   i2s_samples[] =  [0x44, 0x55, 0xAB, 0x77, 0x99, 0xBB, 0x11, 0x22] = [Right channel,  Left channel]
 //   notes:
 //       samples in wav_samples[] arranged in little endian format:
 //           0x77 is the most significant byte of the 32-bit sample
 //           0x44 is the least significant byte of the 32-bit sample
-//              and
-//           RIGHT Channel = 0x44, 0x55, 0xAB, 0x77
-//           LEFT Channel =  0x99, 0xBB, 0x11, 0x22
+//   where:
+//      LEFT Channel =  0x99, 0xBB, 0x11, 0x22
+//      RIGHT Channel = 0x44, 0x55, 0xAB, 0x77
 STATIC void machine_i2s_swap_32_bit_stereo_channels(mp_buffer_info_t *bufinfo) {
     int32_t swap_sample;
     int32_t *sample = bufinfo->buf;
@@ -205,7 +206,7 @@ STATIC int8_t get_overlay_index(i2s_bits_per_sample_t bits, machine_i2s_format_t
             return 0;
         } else if (bits == I2S_BITS_PER_SAMPLE_24BIT) {
             return 1;
-        } else { //
+        } else { // 32 bits
             return 2;
         }
     } else { // STEREO
@@ -213,7 +214,7 @@ STATIC int8_t get_overlay_index(i2s_bits_per_sample_t bits, machine_i2s_format_t
             return 3;
         } else if (bits == I2S_BITS_PER_SAMPLE_24BIT) {
             return 4;
-        } else { //
+        } else { // 32 bits
             return 5;
         }
     }
@@ -273,7 +274,7 @@ uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_
         }
 
         esp_err_t ret = i2s_read(
-            self->id,
+            self->i2s_id,
             self->i2s_read_buffer,
             num_bytes_to_read_from_dma,     // TODO confusing -- > to_read versus read
             &num_bytes_read_from_dma,
@@ -348,7 +349,7 @@ uint32_t the_one_write_function_to_rule_them_all(machine_i2s_obj_t *self, mp_buf
         delay = portMAX_DELAY;
     }
 
-    ret = i2s_write(self->id, bufinfo->buf, bufinfo->len, &num_bytes_written, delay);
+    ret = i2s_write(self->i2s_id, bufinfo->buf, bufinfo->len, &num_bytes_written, delay);
 
     switch (ret) {
         case ESP_OK:
@@ -515,13 +516,13 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     // uninstall I2S driver when changes are being made to an active I2S peripheral
     if (self->used) {
-        i2s_driver_uninstall(self->id);
+        i2s_driver_uninstall(self->i2s_id);
     }
 
     self->i2s_buffer_transfer_queue = xQueueCreate(1, sizeof(machine_i2s_buffer_transfer_t));
-    // esp_err_t ret = i2s_driver_install(self->id, &i2s_config, 0, NULL);
+    // esp_err_t ret = i2s_driver_install(self->i2s_id, &i2s_config, 0, NULL);
 
-    esp_err_t ret = i2s_driver_install(self->id, &i2s_config, dma_buf_count, &self->i2s_event_queue);
+    esp_err_t ret = i2s_driver_install(self->i2s_id, &i2s_config, dma_buf_count, &self->i2s_event_queue);
     switch (ret) {
         case ESP_OK:
             break;
@@ -549,7 +550,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         pin_config.data_out_num = self->sd;
     }
 
-    ret = i2s_set_pin(self->id, &pin_config);
+    ret = i2s_set_pin(self->i2s_id, &pin_config);
     switch (ret) {
         case ESP_OK:
             break;
@@ -576,7 +577,7 @@ STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
         "mode=%u,\n"
         "bits=%u, format=%u,\n"
         "rate=%d)",
-        self->id, self->sck, self->ws, self->sd,
+        self->i2s_id, self->sck, self->ws, self->sd,
         self->mode,
         self->bits, self->format,
         self->rate
@@ -591,16 +592,16 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     // note: it is safe to assume that the arg pointer below references a positional argument because the arg check above
     //       guarantees that at least one positional argument has been provided
     i2s_port_t i2s_id = mp_obj_get_int(args[0]);
-    if (i2s_id == I2S_NUM_0) {
+    if (i2s_id == 0) {
         self = &machine_i2s_obj[0];
-    } else if (i2s_id == I2S_NUM_1) {
+    } else if (i2s_id == 1) {
         self = &machine_i2s_obj[1];
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("I2S ID is not valid"));
     }
 
     self->base.type = &machine_i2s_type;
-    self->id = i2s_id;
+    self->i2s_id = i2s_id;
 
     // is I2S peripheral already in use?
     if (self->used) {
@@ -638,6 +639,7 @@ STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint
 
     if (self->mode != (I2S_MODE_MASTER | I2S_MODE_RX)) {
         *errcode = MP_EPERM;
+        // TODO throw exception?
     }
 
     // TODO should likely put asyncio first and throw an exception if callback is set (or just ignore the callback)
@@ -709,7 +711,7 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
 
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
     machine_i2s_obj_t *self = self_in;
-    i2s_driver_uninstall(self->id);
+    i2s_driver_uninstall(self->i2s_id);
     self->asyncio_detected = false;
     self->used = false;
 
@@ -798,13 +800,12 @@ STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_write),           MP_ROM_PTR(&mp_stream_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_deinit),          MP_ROM_PTR(&machine_i2s_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR_callback),        MP_ROM_PTR(&machine_i2s_callback_obj) },
-    #if MEASURE_COPY_PERFORMANCE
+
+    #if MEASURE_COPY_PERFORMANCE  // temporary - to be removed before mainline commit
     { MP_ROM_QSTR(MP_QSTR_copytest),        MP_ROM_PTR(&machine_i2s_copytest_obj) },
     #endif
 
     // Constants
-    { MP_ROM_QSTR(MP_QSTR_NUM0),            MP_ROM_INT(I2S_NUM_0) },
-    { MP_ROM_QSTR(MP_QSTR_NUM1),            MP_ROM_INT(I2S_NUM_1) },
     { MP_ROM_QSTR(MP_QSTR_RX),              MP_ROM_INT(I2S_MODE_MASTER | I2S_MODE_RX) },
     { MP_ROM_QSTR(MP_QSTR_TX),              MP_ROM_INT(I2S_MODE_MASTER | I2S_MODE_TX) },
     { MP_ROM_QSTR(MP_QSTR_STEREO),          MP_ROM_INT(STEREO) },

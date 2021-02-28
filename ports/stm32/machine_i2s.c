@@ -26,6 +26,7 @@
  * THE SOFTWARE.
  */
 
+// TODO review need for all headers
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -372,15 +373,15 @@ bool circular_buf_full(circular_buf_t *cbuf)
 //
 //  Example:
 //
-//   little_endian[] = [L_0-7,   L_8-15,  L_16-23, L_24-31, R_0-7,   R_8-15,  R_16-23, R_24-31] =  [Left channel, Right channel]           
-//   stm_api[] =       [L_16-23, L_24-31, L_0-7,   L_8-15,  R_16-23, R_24-31, R_0-7,   R_8-15] = [Left channel, Right channel]
+//   wav_samples[] = [L_0-7,   L_8-15,  L_16-23, L_24-31, R_0-7,   R_8-15,  R_16-23, R_24-31] =  [Left channel, Right channel]
+//   stm_api[] =     [L_16-23, L_24-31, L_0-7,   L_8-15,  R_16-23, R_24-31, R_0-7,   R_8-15] = [Left channel, Right channel]
 //
 //   where:
 //      L_0-7 is the least significant byte of the 32 bit sample in the Left channel 
 //      L_24-31 is the most significant byte of the 32 bit sample in the Left channel 
 //
-//   little_endian[] =  [0x99, 0xBB, 0x11, 0x22, 0x44, 0x55, 0xAB, 0x77] = [Left channel, Right channel]           
-//   stm_api[] =        [0x11, 0x22, 0x99, 0xBB, 0xAB, 0x77, 0x44, 0x55] = [Left channel, Right channel]
+//   wav_samples[] =  [0x99, 0xBB, 0x11, 0x22, 0x44, 0x55, 0xAB, 0x77] = [Left channel, Right channel]
+//   stm_api[] =      [0x11, 0x22, 0x99, 0xBB, 0xAB, 0x77, 0x44, 0x55] = [Left channel, Right channel]
 //
 //   where:
 //      LEFT Channel =  0x99, 0xBB, 0x11, 0x22
@@ -398,6 +399,7 @@ STATIC void machine_i2s_reformat_32_bit_samples(int32_t *sample, uint32_t num_sa
 #define NUM_FORMATS (4)  // TODO confusion with self->format ?
 #define I2S_RX_FRAME_SIZE_IN_BYTES (8)
 
+// TODO add 24-bits
 STATIC const int8_t i2s_frame_overlay[NUM_FORMATS][I2S_RX_FRAME_SIZE_IN_BYTES] = {
     { 0,  1, -1, -1, -1, -1, -1, -1 },  // Mono, 16-bits
     { 2,  3,  0,  1, -1, -1, -1, -1 },  // Mono, 32-bits
@@ -1415,7 +1417,7 @@ STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_deinit),          MP_ROM_PTR(&machine_i2s_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR_callback),        MP_ROM_PTR(&machine_i2s_callback_obj) },
     
-#if MEASURE_COPY_PERFORMANCE
+#if MEASURE_COPY_PERFORMANCE  // temporary - to be removed before mainline commit
     { MP_ROM_QSTR(MP_QSTR_copytest),       MP_ROM_PTR(&machine_i2s_copytest_obj) },
 #endif     
     
@@ -1424,8 +1426,6 @@ STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_TX),              MP_ROM_INT(I2S_MODE_MASTER_TX) },
     { MP_ROM_QSTR(MP_QSTR_STEREO),          MP_ROM_INT(STEREO) },
     { MP_ROM_QSTR(MP_QSTR_MONO),            MP_ROM_INT(MONO) },
-
-    // TODO consider "high water mark" method, read() and clear()
 };
 MP_DEFINE_CONST_DICT(machine_i2s_locals_dict, machine_i2s_locals_dict_table);
 
