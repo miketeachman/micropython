@@ -39,6 +39,8 @@
 #include "mphalport.h"
 #include "driver/i2s.h"
 
+#include "soc/i2s_reg.h"
+
 #define MEASURE_COPY_PERFORMANCE 1
 
 #define I2S_TASK_PRIORITY        (ESP_TASK_PRIO_MIN + 1)
@@ -163,6 +165,13 @@ STATIC machine_i2s_obj_t machine_i2s_obj[I2S_NUM_MAX] = {
     [0].used = false,
     [1].used = false
 };
+
+// this will be called on MicroPython startup and every soft reset
+void machine_i2s_init(void) {
+    for (uint8_t i = 0; i < I2S_NUM_MAX; i++) {
+        machine_i2s_obj[i].used = false;
+    }
+}
 
 // TODO for each instance of I2S?
 
@@ -538,6 +547,12 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
             break;
     }
 
+    // apply workaround for bug in some ESP-IDF versions that swap
+    // the left and right channels
+    // https://github.com/espressif/esp-idf/issues/6625
+    REG_SET_BIT(I2S_CONF_REG(self->i2s_id), I2S_TX_MSB_RIGHT);
+    REG_SET_BIT(I2S_CONF_REG(self->i2s_id), I2S_RX_MSB_RIGHT);
+
     i2s_pin_config_t pin_config;
     pin_config.bck_io_num = self->sck;
     pin_config.ws_io_num = self->ws;
@@ -565,7 +580,6 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
             mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("I2S set pin: Undocumented error"));
             break;
     }
-
     self->used = true;
 }
 
@@ -616,12 +630,12 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     return MP_OBJ_FROM_PTR(self);
 }
 
-STATIC mp_obj_t machine_i2s_init(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+STATIC mp_obj_t machine_i2s_obj_init(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     // note:  "pos_args + 1" below has the effect of skipping over "self"
     machine_i2s_init_helper(pos_args[0], n_pos_args - 1, pos_args + 1, kw_args);
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_init_obj, 1, machine_i2s_init);
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_init_obj, 1, machine_i2s_obj_init);
 
 STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint_t size, int *errcode) {
     machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);

@@ -194,7 +194,7 @@ typedef struct _machine_i2s_obj_t {
     circular_buf_t          internal_buffer;  // TODO change to ring buffer
     uint8_t                 *ring_buffer_storage;  // allocated from MicroPython heap
     bool                    used;
-    bool                    asyncio_detected;
+    bool                    uasyncio_detected;
     bool                    non_blocking;
     non_blocking_info_t     non_blocking_info;
 
@@ -463,6 +463,7 @@ uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_
     uint32_t num_bytes_to_copy_from_ring_buffer_max = bufinfo->len * I2S_RX_FRAME_SIZE_IN_BYTES / target_frame_size_in_bytes;
     uint32_t num_bytes_to_copy_from_ring_buffer;
     
+    // TODO consider using a State variable to determine mode.  e..g  asyncio, blocking, non_blocking
     if (!asyncio) {
         // TODO consider that some bytes in circular buf may be skipped over (so #bytes in circular
         // buf would be more than #bytes in target buffer)
@@ -475,7 +476,7 @@ uint32_t the_one_readinto_function_to_rule_them_all(machine_i2s_obj_t *self, mp_
         //printf("num_bytes_to_copy_from_ring_buffer: %ld\n", num_bytes_to_copy_from_ring_buffer);
     } else {  // asyncio
         num_bytes_to_copy_from_ring_buffer = MIN(num_bytes_to_copy_from_ring_buffer_max, circular_buf_size(&self->internal_buffer));
-        printf("num_bytes_to_copy_from_ring_buffer: %ld\n", num_bytes_to_copy_from_ring_buffer);
+        //printf("num_bytes_to_copy_from_ring_buffer: %ld\n", num_bytes_to_copy_from_ring_buffer);
     }
 
     if (num_bytes_to_copy_from_ring_buffer) {
@@ -1085,7 +1086,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     self->format = i2s_format;
     self->rate = args[ARG_rate].u_int;
     self->callback = MP_OBJ_NULL;
-    self->asyncio_detected = false;
+    self->uasyncio_detected = false;
     self->non_blocking = false;
     
     I2S_InitTypeDef *init = &self->i2s.Init;
@@ -1262,7 +1263,7 @@ STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint
         bufinfo.buf = (void *)buf_in;
         bufinfo.len = size;
         uint32_t num_bytes_read;
-        if (self->asyncio_detected == true) {  // TODO refactor ... just the true/false are different
+        if (self->uasyncio_detected == true) {  // TODO refactor ... just the true/false are different
             num_bytes_read = the_one_readinto_function_to_rule_them_all(self, &bufinfo, true);
             //printf("async, num_bytes_read: %ld\n", num_bytes_read);
         } else {
@@ -1303,7 +1304,7 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
         bufinfo.buf = (void *)buf_in;
         bufinfo.len = size;
         uint32_t num_bytes_written;
-        if (self->asyncio_detected == true) {  // TODO refactor ... just the true/false are different
+        if (self->uasyncio_detected == true) {  // TODO refactor ... just the true/false are different
             num_bytes_written = the_one_write_function_to_rule_them_all(self, &bufinfo, true);
             //printf("async, num_bytes_written: %ld\n", num_bytes_written);
         } else {
@@ -1437,7 +1438,7 @@ STATIC mp_uint_t machine_i2s_ioctl(mp_obj_t self_in, mp_uint_t request, mp_uint_
     // set a flag indicating that I2S is being used in uasyncio mode
     // note:  assumption that an IO poll from the uasyncio scheduler is the only means
     // to get here
-    self->asyncio_detected = true;  // TODO find a better mechanism to detect asyncio
+    self->uasyncio_detected = true;  // TODO find a better mechanism to detect asyncio
 
     //printf("ioctl delta last run [us]:  %ld\n", ticks_now_us - self->junk_t0);
 

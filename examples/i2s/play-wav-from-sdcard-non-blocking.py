@@ -4,44 +4,46 @@
 
 # Purpose:
 # - read audio samples from a WAV file on SD Card
-# - write audio samples to an I2S amplifier or DAC module 
-# - the WAV file will play continuously in a loop until 
+# - write audio samples to an I2S amplifier or DAC module
+# - the WAV file will play continuously in a loop until
 #   a keyboard interrupt is detected or the board is reset
-# - the write() method is non-blocking.  A callback() method sets a callback function
-#   that is called when the entire buffer has been written to the I2S peripheral
 #
+# - Non-Blocking version
+#   The write() method is non-blocking.
+#   A callback function is called when all sample data has been written to the I2S interface
+#   A callback() method sets a callback function
 
-import gc
+
+import uos
 import time
 import micropython
 from machine import I2S
 from machine import Pin
-import uos
 
 PLAY = 0
 PAUSE = 1
 RESUME = 2
 STOP = 3
 
-if uos.uname().machine.find('PYBv1') == 0:
+if uos.uname().machine.find("PYBv1") == 0:
     pass
-elif uos.uname().machine.find('PYBD') == 0:
+elif uos.uname().machine.find("PYBD") == 0:
     import pyb
-    pyb.Pin('EN_3V3').on()  # provide 3.3V on 3V3 output pin
-    uos.mount(pyb.SDCard(), '/sd')
-elif uos.uname().machine.find('ESP32') == 0:
+    pyb.Pin("EN_3V3").on()  # provide 3.3V on 3V3 output pin
+    uos.mount(pyb.SDCard(), "/sd")
+elif uos.uname().machine.find("ESP32") == 0:
     from machine import SDCard
     sd = SDCard(slot=3, sck=Pin(18), mosi=Pin(23), miso=Pin(19), cs=Pin(4))
-    uos.mount(sd, '/sd')
+    uos.mount(sd, "/sd")
 else:
-    print('Warning: program not tested with this board')    
+    print("Warning: program not tested with this board")
 
-gc.collect()
 
 def eof_callback(arg):
-        global state
-        print('end of audio file')
-        #state = STOP  # uncomment to stop looping playback
+    global state
+    print("end of audio file")
+    # state = STOP  # uncomment to stop looping playback
+
 
 def i2s_callback(arg):
     global state
@@ -61,46 +63,55 @@ def i2s_callback(arg):
     elif state == PAUSE:
         num_written = audio_out.write(silence)
     elif state == STOP:
-        # cleanup 
+        # cleanup
         wav.close()
-        if uos.uname().machine.find('PYBD') == 0:
-            uos.umount('/sd')
-        if uos.uname().machine.find('ESP32') == 0:
-            uos.umount('/sd')
+        if uos.uname().machine.find("PYBD") == 0:
+            uos.umount("/sd")
+        if uos.uname().machine.find("ESP32") == 0:
+            uos.umount("/sd")
             sd.deinit()
-        audio_out.deinit() 
-        print('Done')  
+        audio_out.deinit()
+        print("Done")
     else:
-        print('Not a valid state.  State ignored')
-          
-#======= USER CONFIGURATION =======
-WAV_FILE = 'music-16k-16bits-mono.wav'
-WAV_SAMPLE_SIZE_IN_BITS = 16
-FORMAT = I2S.MONO
-SAMPLE_RATE_IN_HZ = 16000
-#======= USER CONFIGURATION =======
+        print("Not a valid state.  State ignored")
 
-#======= I2S CONFIGURATION =======
-sck_pin = Pin(33) 
-ws_pin = Pin(25)  
-sd_pin = Pin(32)
+
+# ======= AUDIO CONFIGURATION =======
+WAV_FILE = "music-16k-32bits-stereo.wav"
+WAV_SAMPLE_SIZE_IN_BITS = 32
+FORMAT = I2S.STEREO
+SAMPLE_RATE_IN_HZ = 16000
+# ======= AUDIO CONFIGURATION =======
+
+# ======= I2S CONFIGURATION =======
+SCK_PIN = "W29"
+WS_PIN = "W16"
+SD_PIN = "Y4"
 I2S_ID = 1
-#======= I2S CONFIGURATION =======
+BUFFER_LENGTH_IN_BYTES = 40000
+# ======= I2S CONFIGURATION =======
+
+sck_pin = Pin(SCK_PIN)
+ws_pin = Pin(WS_PIN)
+sd_pin = Pin(SD_PIN)
 
 audio_out = I2S(
     I2S_ID,
-    sck=sck_pin, ws=ws_pin, sd=sd_pin, 
+    sck=sck_pin,
+    ws=ws_pin,
+    sd=sd_pin,
     mode=I2S.TX,
     bits=WAV_SAMPLE_SIZE_IN_BITS,
     format=FORMAT,
     rate=SAMPLE_RATE_IN_HZ,
-    bufferlen=50000)
+    bufferlen=BUFFER_LENGTH_IN_BYTES,
+)
 
 audio_out.callback(i2s_callback)
 state = PAUSE
 
-wav = open('/sd/{}'.format(WAV_FILE),'rb')
-pos = wav.seek(44) # advance to first byte of Data section in WAV file
+wav = open("/sd/{}".format(WAV_FILE), "rb")
+pos = wav.seek(44)  # advance to first byte of Data section in WAV file
 
 # allocate a small array of blank samples
 silence = bytearray(1000)
