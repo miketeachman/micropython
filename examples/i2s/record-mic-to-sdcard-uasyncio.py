@@ -38,14 +38,14 @@ WAV_FILE = "mic.wav"
 RECORD_TIME_IN_SECONDS = 10
 WAV_SAMPLE_SIZE_IN_BITS = 16
 FORMAT = I2S.STEREO
-SAMPLE_RATE_IN_HZ = 22050
+SAMPLE_RATE_IN_HZ = 44100
 # ======= AUDIO CONFIGURATION =======
 
 # ======= I2S CONFIGURATION =======
-SCK_PIN = 'Y6'
-WS_PIN = 'Y5'
-SD_PIN = 'Y8'
-I2S_ID = 2
+SCK_PIN = 13
+WS_PIN = 14
+SD_PIN = 34
+I2S_ID = 1
 BUFFER_LENGTH_IN_BYTES = 40000
 # ======= I2S CONFIGURATION =======
 
@@ -162,4 +162,12 @@ try:
 except (KeyboardInterrupt, Exception) as e:
     print("Exception {} {}\n".format(type(e).__name__, e))
 finally:
+    # cleanup
+    wav.close()
+    if uos.uname().machine.find("PYBD") == 0:
+        uos.umount("/sd")
+    if uos.uname().machine.find("ESP32") == 0:
+        uos.umount("/sd")
+        sd.deinit()
+    audio_in.deinit()
     ret = asyncio.new_event_loop()  # Clear retained uasyncio state

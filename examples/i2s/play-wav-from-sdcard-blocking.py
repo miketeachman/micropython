@@ -30,16 +30,16 @@ else:
     print("Warning: program not tested with this board")
 
 # ======= AUDIO CONFIGURATION =======
-WAV_FILE = "music-16k-16bits-mono.wav"
+WAV_FILE = "music-16k-16bits-stereo.wav"
 WAV_SAMPLE_SIZE_IN_BITS = 16
-FORMAT = I2S.MONO
+FORMAT = I2S.STEREO
 SAMPLE_RATE_IN_HZ = 16000
 # ======= AUDIO CONFIGURATION =======
 
 # ======= I2S CONFIGURATION =======
-SCK_PIN = "W29"
-WS_PIN = "W16"
-SD_PIN = "Y4"
+SCK_PIN = 33
+WS_PIN = 25
+SD_PIN = 32
 I2S_ID = 1
 BUFFER_LENGTH_IN_BYTES = 40000
 # ======= I2S CONFIGURATION =======
@@ -47,6 +47,7 @@ BUFFER_LENGTH_IN_BYTES = 40000
 sck_pin = Pin(SCK_PIN)
 ws_pin = Pin(WS_PIN)
 sd_pin = Pin(SD_PIN)
+
 
 audio_out = I2S(
     I2S_ID,
@@ -74,6 +75,7 @@ print("==========  START PLAYBACK ==========")
 try:
     while True:
         num_read = wav.readinto(wav_samples_mv)
+        
         # end of WAV file?
         if num_read == 0:
             # end-of-file, advance to first byte of Data section

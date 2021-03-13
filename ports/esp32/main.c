@@ -114,7 +114,6 @@ soft_reset:
 
     // initialise peripherals
     machine_pins_init();
-    machine_i2s_init();
 
     // run boot-up scripts
     pyexec_frozen_module("_boot.py");
