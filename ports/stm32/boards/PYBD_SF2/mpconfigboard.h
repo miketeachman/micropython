@@ -145,14 +145,14 @@ extern struct _spi_bdev_t spi_bdev2;
 #define MICROPY_HW_SPI3_MISO        (pyb_pin_W50)
 #define MICROPY_HW_SPI3_MOSI        (pyb_pin_W46)
 
+// I2S busses
+#define MICROPY_HW_ENABLE_I2S1      (1)
+#define MICROPY_HW_ENABLE_I2S2      (1)
+
 // CAN busses
 #define MICROPY_HW_CAN1_NAME        "X"
 #define MICROPY_HW_CAN1_TX          (pyb_pin_X10)
 #define MICROPY_HW_CAN1_RX          (pyb_pin_X9)
-
-// I2S busses
-#define MICROPY_HW_ENABLE_I2S1      (1)
-#define MICROPY_HW_ENABLE_I2S2      (1)
 
 // USRSW is not pulled, and pressing the button makes the input go low.
 #define MICROPY_HW_USRSW_PIN        (pyb_pin_USR)
