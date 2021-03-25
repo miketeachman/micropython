@@ -526,6 +526,7 @@ soft_reset:
     #if MICROPY_HW_ENABLE_USB
     pyb_usb_init0();
     #endif
+
     // Initialise the local flash filesystem.
     // Create it if needed, mount in on /flash, and set it as current dir.
     bool mounted_flash = false;
@@ -674,7 +675,6 @@ soft_reset_exit:
     #if MICROPY_HW_ENABLE_CAN
     can_deinit_all();
     #endif
-
     machine_deinit();
 
     #if MICROPY_PY_THREAD
