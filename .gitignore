@@ -42,6 +42,3 @@ user.props
 # Generated rst files
 ######################
 genrst/
-
-.project
-.pydevproject
