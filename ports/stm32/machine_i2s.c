@@ -74,15 +74,18 @@
 //   (this is standard for almost all I2S hardware, such as MEMS microphones)
 // - all 3 Modes of operation are implemented using the HAL I2S Generic Driver
 // - all sample data transfers use DMA mode IO operation
-// - the DMA controller is configured in Circular mode to fulfil continuous and gapless sample flows
-//   in Circular mode, DMA is supplied a single buffer.  DMA loops on this buffer.
+// - the DMA controller is configured in Circular mode to fulfil continuous and gapless sample flows.
+// - the DMA ping-pong buffer needs to be aligned to a cache line size of 32 bytes.  32 byte
+//   alignment is needed to use the routines that clean and invalidate D-Cache which work on a
+//   32 byte address boundary.  Not all STM32 devices have a D-Cache.  Buffer alignment
+//   will still happen on these devices to keep this code simple.
 
 #define MAX_I2S_STM32 (2)
 
-// DMA buffer size was empirically determined.  It is a tradeoff between:
+// DMA ping-pong buffer size was empirically determined.  It is a tradeoff between:
 // 1. memory use (smaller buffer size desirable to reduce memory footprint)
 // 2. interrupt frequency (larger buffer size desirable to reduce interrupt frequency)
-// The sizeof 1/2 of the DMA buffer must be evenly divisible by 8.
+// The sizeof 1/2 of the DMA buffer must be evenly divisible by the cache line size of 32 bytes.
 #define SIZEOF_DMA_BUFFER_IN_BYTES (256)
 #define SIZEOF_HALF_DMA_BUFFER_IN_BYTES (SIZEOF_DMA_BUFFER_IN_BYTES / 2)
 
@@ -135,7 +138,8 @@ typedef struct _machine_i2s_obj_t {
     int32_t rate;
     int32_t bufferlen;
     mp_obj_t callback_for_non_blocking;
-    uint8_t dma_buffer[SIZEOF_DMA_BUFFER_IN_BYTES];
+    uint8_t dma_buffer[SIZEOF_DMA_BUFFER_IN_BYTES + 0x1f]; // 0x1f related to D-Cache alignment
+    uint8_t *dma_buffer_dcache_aligned;
     ring_buf_t ring_buffer;
     uint8_t *ring_buffer_storage;
     non_blocking_descriptor_t non_blocking_descriptor;
@@ -434,20 +438,23 @@ void copy_appbuf_to_ringbuf_non_blocking(machine_i2s_obj_t *self) {
 
 // function is used in IRQ context
 STATIC void empty_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
-    uint16_t dma_buffer_index = 0;
+    uint16_t dma_buffer_offset = 0;
+
     if (dma_ping_pong == TOP_HALF) {
-        dma_buffer_index = 0;
+        dma_buffer_offset = 0;
     } else { // BOTTOM_HALF
-        dma_buffer_index = SIZEOF_HALF_DMA_BUFFER_IN_BYTES;
+        dma_buffer_offset = SIZEOF_HALF_DMA_BUFFER_IN_BYTES;
     }
 
+    uint8_t *dma_buffer_p = &self->dma_buffer_dcache_aligned[dma_buffer_offset];
+
     // flush and invalidate cache so the CPU reads data placed into RAM by DMA
-    MP_HAL_CLEANINVALIDATE_DCACHE(&(self->dma_buffer[dma_buffer_index]), SIZEOF_HALF_DMA_BUFFER_IN_BYTES);
+    MP_HAL_CLEANINVALIDATE_DCACHE(dma_buffer_p, SIZEOF_HALF_DMA_BUFFER_IN_BYTES);
 
     // when space exists, copy samples into ring buffer
     if (ringbuf_available_space(&self->ring_buffer) >= SIZEOF_HALF_DMA_BUFFER_IN_BYTES) {
         for (uint32_t i = 0; i < SIZEOF_HALF_DMA_BUFFER_IN_BYTES; i++) {
-            ringbuf_push(&self->ring_buffer, self->dma_buffer[dma_buffer_index++]);
+            ringbuf_push(&self->ring_buffer, dma_buffer_p[i]);
         }
     }
 }
@@ -462,7 +469,7 @@ STATIC void feed_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
         dma_buffer_offset = SIZEOF_HALF_DMA_BUFFER_IN_BYTES;
     }
 
-    uint8_t *dma_buffer_p = &self->dma_buffer[dma_buffer_offset];
+    uint8_t *dma_buffer_p = &self->dma_buffer_dcache_aligned[dma_buffer_offset];
 
     // when data exists, copy samples from ring buffer
     if (ringbuf_available_data(&self->ring_buffer) >= SIZEOF_HALF_DMA_BUFFER_IN_BYTES) {
@@ -492,7 +499,7 @@ STATIC void feed_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
 
         // reformat 32 bit samples to match STM32 HAL API format
         if (self->bits == 32) {
-            reformat_32_bit_samples((int32_t *)&self->dma_buffer[dma_buffer_offset], SIZEOF_HALF_DMA_BUFFER_IN_BYTES / (sizeof(uint32_t)));
+            reformat_32_bit_samples((int32_t *)dma_buffer_p, SIZEOF_HALF_DMA_BUFFER_IN_BYTES / (sizeof(uint32_t)));
         }
     }
 
@@ -501,6 +508,7 @@ STATIC void feed_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
 }
 
 STATIC bool i2s_init(machine_i2s_obj_t *self) {
+
     // init the GPIO lines
     GPIO_InitTypeDef GPIO_InitStructure;
     GPIO_InitStructure.Mode = GPIO_MODE_AF_PP;
@@ -792,9 +800,9 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     HAL_StatusTypeDef status;
     if (self->mode == I2S_MODE_MASTER_TX) {
-        status = HAL_I2S_Transmit_DMA(&self->hi2s, (void *)self->dma_buffer, number_of_samples);
+        status = HAL_I2S_Transmit_DMA(&self->hi2s, (void *)self->dma_buffer_dcache_aligned, number_of_samples);
     } else {  // RX
-        status = HAL_I2S_Receive_DMA(&self->hi2s, (void *)self->dma_buffer, number_of_samples);
+        status = HAL_I2S_Receive_DMA(&self->hi2s, (void *)self->dma_buffer_dcache_aligned, number_of_samples);
     }
 
     if (status != HAL_OK) {
@@ -841,6 +849,10 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
 
     self->base.type = &machine_i2s_type;
     self->i2s_id = i2s_id;
+
+    // align DMA buffer start to the cache line size (32 bytes)
+    self->dma_buffer_dcache_aligned = (uint8_t *)((uint32_t)(self->dma_buffer + 0x1f) & ~0x1f);
+
     mp_map_t kw_args;
     mp_map_init_fixed_table(&kw_args, n_kw_args, args + n_pos_args);
     machine_i2s_init_helper(self, n_pos_args - 1, args + 1, &kw_args);
