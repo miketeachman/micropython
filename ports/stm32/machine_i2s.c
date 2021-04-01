@@ -836,11 +836,11 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     machine_i2s_obj_t *self = m_new_obj(machine_i2s_obj_t);
 
     if (0) {
-    #ifdef MICROPY_HW_ENABLE_I2S1
+    #ifdef MICROPY_HW_I2S1
     } else if (i2s_id == 1) {
         machine_i2s_obj[0] = self;
     #endif
-    #ifdef MICROPY_HW_ENABLE_I2S2
+    #ifdef MICROPY_HW_I2S2
     } else if (i2s_id == 2) {
         machine_i2s_obj[1] = self;
     #endif
