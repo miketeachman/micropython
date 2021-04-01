@@ -33,14 +33,15 @@
 
 #include "py/obj.h"
 #include "py/runtime.h"
+#include "py/mphal.h"
 #include "py/misc.h"
 #include "py/stream.h"
 #include "py/objstr.h"
 #include "modmachine.h"
-#include "mphalport.h"
 #include "pin.h"
 #include "dma.h"
 
+#if MICROPY_HW_ENABLE_I2S
 // The I2S module has 3 modes of operation:
 //
 // Mode1:  Blocking
@@ -48,7 +49,7 @@
 // - this is the default mode of operation
 //
 // Mode2:  Non-Blocking
-// - readinto() and write() methods return immediately.
+// - readinto() and write() methods return immediately
 // - buffer filling and emptying happens asynchronously to the main MicroPython task
 // - a callback function is called when the supplied buffer has been filled (read) or emptied (write)
 // - non-blocking mode is enabled when a callback is set with the callback() method
@@ -74,7 +75,7 @@
 //   (this is standard for almost all I2S hardware, such as MEMS microphones)
 // - all 3 Modes of operation are implemented using the HAL I2S Generic Driver
 // - all sample data transfers use DMA mode IO operation
-// - the DMA controller is configured in Circular mode to fulfil continuous and gapless sample flows.
+// - the DMA controller is configured in Circular mode to fulfil continuous and gapless sample flows
 // - the DMA ping-pong buffer needs to be aligned to a cache line size of 32 bytes.  32 byte
 //   alignment is needed to use the routines that clean and invalidate D-Cache which work on a
 //   32 byte address boundary.  Not all STM32 devices have a D-Cache.  Buffer alignment
@@ -1104,3 +1105,6 @@ const mp_obj_type_t machine_i2s_type = {
     .make_new = machine_i2s_make_new,
     .locals_dict = (mp_obj_dict_t *)&machine_i2s_locals_dict,
 };
+
+#endif // MICROPY_HW_ENABLE_I2S
+
