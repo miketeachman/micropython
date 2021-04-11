@@ -121,9 +121,9 @@ static const DMA_InitTypeDef dma_init_struct_i2s = {
     .Priority = DMA_PRIORITY_LOW,
     #if defined(STM32F4) || defined(STM32F7) || defined(STM32H7)
     .FIFOMode = DMA_FIFOMODE_DISABLE,
-    //.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL,
-    //.MemBurst = DMA_MBURST_SINGLE,
-    //.PeriphBurst = DMA_PBURST_SINGLE
+    .FIFOThreshold = DMA_FIFO_THRESHOLD_FULL,
+    .MemBurst = DMA_MBURST_SINGLE,
+    .PeriphBurst = DMA_PBURST_SINGLE
     #endif
 };
 #endif

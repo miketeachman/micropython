@@ -74,7 +74,7 @@
 // - for readinto method the I2S hardware is read using 8-byte frames
 //   (this is standard for almost all I2S hardware, such as MEMS microphones)
 // - all 3 Modes of operation are implemented using the HAL I2S Generic Driver
-// - all sample data transfers use DMA mode IO operation
+// - all sample data transfers use DMA
 // - the DMA controller is configured in Circular mode to fulfil continuous and gapless sample flows
 // - the DMA ping-pong buffer needs to be aligned to a cache line size of 32 bytes.  32 byte
 //   alignment is needed to use the routines that clean and invalidate D-Cache which work on a
@@ -862,7 +862,6 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
 }
 
 STATIC mp_obj_t machine_i2s_init(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    // note:  "pos_args + 1" below has the effect of skipping over "self"
     machine_i2s_init_helper(pos_args[0], n_pos_args - 1, pos_args + 1, kw_args);
     return mp_const_none;
 }

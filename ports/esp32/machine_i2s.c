@@ -77,6 +77,7 @@
 //   - write method: every sample is output to both the L and R channels
 // - for readinto method the I2S hardware is read using 8-byte frames
 //   (this is standard for almost all I2S hardware, such as MEMS microphones)
+// - all sample data transfers use DMA
 
 #define I2S_TASK_PRIORITY        (ESP_TASK_PRIO_MIN + 1)
 #define I2S_TASK_STACK_SIZE      (2048)
@@ -495,14 +496,12 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
 
     mp_map_t kw_args;
     mp_map_init_fixed_table(&kw_args, n_kw_args, args + n_pos_args);
-    // note:  "args + 1" below has the effect of skipping over the ID argument
     machine_i2s_init_helper(self, n_pos_args - 1, args + 1, &kw_args);
 
     return MP_OBJ_FROM_PTR(self);
 }
 
 STATIC mp_obj_t machine_i2s_obj_init(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    // note:  "pos_args + 1" below has the effect of skipping over "self"
     machine_i2s_init_helper(pos_args[0], n_pos_args - 1, pos_args + 1, kw_args);
     return mp_const_none;
 }
