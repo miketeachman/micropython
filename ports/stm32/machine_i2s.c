@@ -381,7 +381,7 @@ void fill_appbuf_from_ringbuf_non_blocking(machine_i2s_obj_t *self) {
 
         if (self->non_blocking_descriptor.index >= self->non_blocking_descriptor.appbuf.len) {
             self->non_blocking_descriptor.copy_in_progress = false;
-            mp_sched_schedule(self->callback_for_non_blocking, self);
+            mp_sched_schedule(self->callback_for_non_blocking, MP_OBJ_FROM_PTR(self));
         }
     }
 }
