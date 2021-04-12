@@ -428,6 +428,12 @@ HAL_SRC_C += $(addprefix $(HAL_DIR)/Src/stm32$(MCU_SERIES)xx_,\
 	)
 endif
 
+ifeq ($(MCU_SERIES),$(filter $(MCU_SERIES),f4))
+HAL_SRC_C += $(addprefix $(HAL_DIR)/Src/stm32$(MCU_SERIES)xx_,\
+	hal_i2s_ex.c \
+	)
+endif
+
 USBDEV_SRC_C += $(addprefix $(USBDEV_DIR)/,\
 	core/src/usbd_core.c \
 	core/src/usbd_ctlreq.c \
