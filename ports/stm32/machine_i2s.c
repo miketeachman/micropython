@@ -861,8 +861,8 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     return MP_OBJ_FROM_PTR(self);
 }
 
-STATIC mp_obj_t machine_i2s_init(mp_uint_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    machine_i2s_init_helper(pos_args[0], n_pos_args - 1, pos_args + 1, kw_args);
+STATIC mp_obj_t machine_i2s_init(size_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    machine_i2s_init_helper(MP_OBJ_TO_PTR(pos_args[0]), n_pos_args - 1, pos_args + 1, kw_args);
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_init_obj, 1, machine_i2s_init);
