@@ -432,7 +432,7 @@ void copy_appbuf_to_ringbuf_non_blocking(machine_i2s_obj_t *self) {
         self->non_blocking_descriptor.index += num_bytes_to_copy;
         if (self->non_blocking_descriptor.index >= self->non_blocking_descriptor.appbuf.len) {
             self->non_blocking_descriptor.copy_in_progress = false;
-            mp_sched_schedule(self->callback_for_non_blocking, self);
+            mp_sched_schedule(self->callback_for_non_blocking, MP_OBJ_FROM_PTR(self));
         }
     }
 }
@@ -1049,10 +1049,11 @@ STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, 
     }
 }
 
-STATIC mp_uint_t machine_i2s_ioctl(mp_obj_t self_in, mp_uint_t request, mp_uint_t arg, int *errcode) {
+
+STATIC mp_uint_t machine_i2s_ioctl(mp_obj_t self_in, mp_uint_t request, uintptr_t arg, int *errcode) {
     machine_i2s_obj_t *self = self_in;
     mp_uint_t ret;
-    mp_uint_t flags = arg;
+    uintptr_t flags = arg;
     self->io_mode = UASYNCIO; // a call to ioctl() is an indication that uasyncio is being used
 
     if (request == MP_STREAM_POLL) {
