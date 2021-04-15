@@ -713,7 +713,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     // is WS valid?
     if (mp_obj_is_type(args[ARG_ws].u_obj, &pin_type)) {
-        pin_af = pin_find_af(args[ARG_ws].u_obj, AF_FN_I2S, self->i2s_id);
+        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_ws].u_obj), AF_FN_I2S, self->i2s_id);
         if (pin_af->type != AF_PIN_TYPE_I2S_WS) {
             mp_raise_ValueError(MP_ERROR_TEXT("invalid WS pin"));
         }
@@ -723,7 +723,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     // is SD valid?
     if (mp_obj_is_type(args[ARG_sd].u_obj, &pin_type)) {
-        pin_af = pin_find_af(args[ARG_sd].u_obj, AF_FN_I2S, self->i2s_id);
+        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_sd].u_obj), AF_FN_I2S, self->i2s_id);
         if (pin_af->type != AF_PIN_TYPE_I2S_SD) {
             mp_raise_ValueError(MP_ERROR_TEXT("invalid SD pin"));
         }
