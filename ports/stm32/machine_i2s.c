@@ -765,9 +765,9 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         mp_raise_ValueError(MP_ERROR_TEXT("invalid bufferlen"));
     }
 
-    self->sck = args[ARG_sck].u_obj;
-    self->ws = args[ARG_ws].u_obj;
-    self->sd = args[ARG_sd].u_obj;
+    self->sck = MP_OBJ_TO_PTR(args[ARG_sck].u_obj);
+    self->ws = MP_OBJ_TO_PTR(args[ARG_ws].u_obj);
+    self->sd = MP_OBJ_TO_PTR(args[ARG_sd].u_obj);
     self->mode = i2s_mode;
     self->bits = i2s_bits;
     self->format = i2s_format;
