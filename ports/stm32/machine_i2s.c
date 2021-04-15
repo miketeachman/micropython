@@ -541,7 +541,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     }
 
     // GPIO Pin initialization
-    if (self->sck != MP_OBJ_NULL) {
+    if (self->sck != MP_OBJ_TO_PTR(MP_OBJ_NULL)) {
         GPIO_InitStructure.Pin = self->sck->pin_mask;
         const pin_af_obj_t *af = pin_find_af(self->sck, AF_FN_I2S, self->i2s_id);
         GPIO_InitStructure.Alternate = (uint8_t)af->idx;
