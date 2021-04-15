@@ -344,7 +344,7 @@ STATIC void task_for_non_blocking_mode(void *self_in) {
             } else { // RX
                 fill_appbuf_from_dma(self, &descriptor.appbuf);
             }
-            mp_sched_schedule(descriptor.callback, self);
+            mp_sched_schedule(descriptor.callback, MP_OBJ_FROM_PTR(self));
         }
     }
 }
