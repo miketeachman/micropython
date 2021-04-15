@@ -548,14 +548,14 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
         HAL_GPIO_Init(self->sck->gpio, &GPIO_InitStructure);
     }
 
-    if (self->ws != MP_OBJ_NULL) {
+    if (self->ws != MP_OBJ_TO_PTR(MP_OBJ_NULL)) {
         GPIO_InitStructure.Pin = self->ws->pin_mask;
         const pin_af_obj_t *af = pin_find_af(self->ws, AF_FN_I2S, self->i2s_id);
         GPIO_InitStructure.Alternate = (uint8_t)af->idx;
         HAL_GPIO_Init(self->ws->gpio, &GPIO_InitStructure);
     }
 
-    if (self->sd != MP_OBJ_NULL) {
+    if (self->sd != MP_OBJ_TO_PTR(MP_OBJ_NULL)) {
         GPIO_InitStructure.Pin = self->sd->pin_mask;
         const pin_af_obj_t *af = pin_find_af(self->sd, AF_FN_I2S, self->i2s_id);
         GPIO_InitStructure.Alternate = (uint8_t)af->idx;
@@ -703,7 +703,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     // is SCK valid?
     if (mp_obj_is_type(args[ARG_sck].u_obj, &pin_type)) {
-        pin_af = pin_find_af(args[ARG_sck].u_obj, AF_FN_I2S, self->i2s_id);
+        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_sck].u_obj), AF_FN_I2S, self->i2s_id);
         if (pin_af->type != AF_PIN_TYPE_I2S_CK) {
             mp_raise_ValueError(MP_ERROR_TEXT("invalid SCK pin"));
         }
