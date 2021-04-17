@@ -11,7 +11,7 @@ import csv
 SUPPORTED_FN = {
     "TIM": ["CH1", "CH2", "CH3", "CH4", "CH1N", "CH2N", "CH3N", "CH1_ETR", "ETR", "BKIN"],
     "I2C": ["SDA", "SCL"],
-    "I2S": ["CK", "MCK", "SD", "WS", "EXTSD"],
+    "I2S": ["CK", "MCK", "SD", "WS", "EXTSD"], 
     "USART": ["RX", "TX", "CTS", "RTS", "CK"],
     "UART": ["RX", "TX", "CTS", "RTS"],
     "LPUART": ["RX", "TX", "CTS", "RTS"],
@@ -22,7 +22,7 @@ SUPPORTED_FN = {
 
 CONDITIONAL_VAR = {
     "I2C": "MICROPY_HW_I2C{num}_SCL",
-    "I2S": "MICROPY_HW_ENABLE_I2S{num}",
+    "I2S": "MICROPY_HW_I2S{num}",
     "SPI": "MICROPY_HW_SPI{num}_SCK",
     "UART": "MICROPY_HW_UART{num}_TX",
     "LPUART": "MICROPY_HW_LPUART{num}_TX",
