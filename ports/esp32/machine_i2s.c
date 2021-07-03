@@ -78,6 +78,9 @@
 // - for readinto method the I2S hardware is read using 8-byte frames
 //   (this is standard for almost all I2S hardware, such as MEMS microphones)
 // - all sample data transfers use DMA
+// - machine_i2s_obj[] is defined in the root pointer section.  This implementation eliminates a possible race condition
+//   where the IRQ callback (non-blocking mode) follows the GC of the I2S object. That would result in the IRQ using invalid data.
+//   The use of a root pointer guarantees the existence of the I2S object when the IRQ callback happens.
 
 #define I2S_TASK_PRIORITY        (ESP_TASK_PRIO_MIN + 1)
 #define I2S_TASK_STACK_SIZE      (2048)
@@ -145,11 +148,9 @@ STATIC const int8_t i2s_frame_map[NUM_I2S_USER_FORMATS][I2S_RX_FRAME_SIZE_IN_BYT
     { 4,  5,  6,  7,  0,  1,  2,  3 },  // Stereo, 32-bits
 };
 
-STATIC machine_i2s_obj_t *machine_i2s_obj[I2S_NUM_MAX];
-
 void machine_i2s_init0() {
     for (i2s_port_t p = 0; p < I2S_NUM_MAX; p++) {
-        machine_i2s_obj[p] = NULL;
+        MP_STATE_PORT(machine_i2s_obj)[p] = NULL;
     }
 }
 
@@ -491,6 +492,9 @@ STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
 }
 
 STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_args, size_t n_kw_args, const mp_obj_t *args) {
+    // Check that max num of I2S objects used to define root pointers agrees with ESP-IDF
+    MP_STATIC_ASSERT(MICROPY_HW_MAX_I2S == I2S_NUM_MAX);
+
     mp_arg_check_num(n_pos_args, n_kw_args, 1, MP_OBJ_FUN_ARGS_MAX, true);
 
     i2s_port_t port = mp_obj_get_int(args[0]);
@@ -499,13 +503,13 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     }
 
     machine_i2s_obj_t *self;
-    if (machine_i2s_obj[port] == NULL) {
+    if (MP_STATE_PORT(machine_i2s_obj)[port] == NULL) {
         self = m_new_obj(machine_i2s_obj_t);
-        machine_i2s_obj[port] = self;
+        MP_STATE_PORT(machine_i2s_obj)[port] = self;
         self->base.type = &machine_i2s_type;
         self->port = port;
     } else {
-        self = machine_i2s_obj[port];
+        self = MP_STATE_PORT(machine_i2s_obj)[port];
         machine_i2s_deinit(self);
     }
 

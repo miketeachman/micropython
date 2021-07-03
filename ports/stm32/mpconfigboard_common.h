@@ -217,6 +217,8 @@
 #define MICROPY_HW_MAX_UART (6)
 #endif
 #define MICROPY_HW_MAX_LPUART (0)
+#define MICROPY_HW_MAX_I2S (2)
+
 
 // Configuration for STM32F7 series
 #elif defined(STM32F7)
@@ -232,6 +234,7 @@
 #define MICROPY_HW_MAX_TIMER (17)
 #define MICROPY_HW_MAX_UART (8)
 #define MICROPY_HW_MAX_LPUART (0)
+#define MICROPY_HW_MAX_I2S (2)
 
 // Configuration for STM32H7 series
 #elif defined(STM32H7)
@@ -396,6 +399,13 @@
 #define MICROPY_HW_MAX_CAN (2)
 #elif defined(MICROPY_HW_CAN1_TX)
 #define MICROPY_HW_MAX_CAN (1)
+#endif
+
+// Enable I2S if there are any peripherals defined
+#if defined(MICROPY_HW_I2S1) || defined(MICROPY_HW_I2S2)
+#define MICROPY_HW_ENABLE_I2S (1)
+#else
+#define MICROPY_HW_ENABLE_I2S (0)
 #endif
 
 // Define MICROPY_HW_SDMMCx_CK values if that peripheral is used, so that make-pins.py

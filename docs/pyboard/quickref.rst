@@ -224,6 +224,9 @@ I2S bus
 
 See :ref:`machine.I2S <machine.I2S>`. ::
 
+The I2S class is currently available as a Technical Preview.  During the preview period, feedback from 
+users is encouraged.  Based on this feedback, the I2S class API and implementation may be changed.
+
     from machine import I2S, Pin
     
     i2s = I2S(2, sck=Pin('Y6'), ws=Pin('Y5'), sd=Pin('Y8'), mode=I2S.TX, bits=16, format=I2S.STEREO, rate=44100, ibuf=40000) # create I2S object
