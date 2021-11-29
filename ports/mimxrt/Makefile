@@ -231,6 +231,7 @@ SRC_C += \
 	machine_adc.c \
 	machine_bitstream.c \
 	machine_i2c.c \
+	machine_i2s.c \
 	machine_led.c \
 	machine_pin.c \
 	machine_rtc.c \
@@ -389,6 +390,7 @@ SRC_QSTR += \
 	extmod/modonewire.c \
 	extmod/uos_dupterm.c \
 	machine_adc.c \
+	machine_i2s.c \
 	machine_led.c \
 	machine_pin.c \
 	machine_pwm.c \

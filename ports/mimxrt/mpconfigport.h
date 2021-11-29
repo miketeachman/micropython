@@ -135,6 +135,7 @@ uint32_t trng_random_u32(void);
 #define MICROPY_PY_MACHINE_PWM_DUTY_U16_NS  (1)
 #define MICROPY_PY_MACHINE_PWM_INCLUDEFILE  "ports/mimxrt/machine_pwm.c"
 #define MICROPY_PY_MACHINE_I2C              (1)
+#define MICROPY_PY_MACHINE_I2S              (1)
 #define MICROPY_PY_MACHINE_SOFTI2C          (1)
 #define MICROPY_PY_MACHINE_SPI              (1)
 #define MICROPY_PY_MACHINE_SOFTSPI          (1)
@@ -268,11 +269,14 @@ extern const struct _mp_obj_type_t network_lan_type;
     MICROPY_HW_NIC_ETH  \
 
 #define MICROPY_HW_PIT_NUM_CHANNELS 3
+#define MICROPY_HW_MAX_I2S (2)
 
 #define MICROPY_PORT_ROOT_POINTERS \
     const char *readline_hist[8]; \
     struct _machine_timer_obj_t *timer_table[MICROPY_HW_PIT_NUM_CHANNELS]; \
     void *machine_pin_irq_objects[MICROPY_HW_NUM_PIN_IRQS]; \
+    /* TODO do all imxrt BOARDS support 2 I2S peripherals? */ \
+    struct _machine_i2s_obj_t *machine_i2s_obj[MICROPY_HW_MAX_I2S]; \
     /* list of registered NICs */ \
     mp_obj_list_t mod_network_nic_list; \
     /* root pointers for sub-systems */ \
