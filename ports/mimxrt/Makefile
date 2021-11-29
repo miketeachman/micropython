@@ -196,6 +196,7 @@ SRC_HAL_IMX_C += \
 	$(MCU_DIR)/drivers/fsl_pit.c \
 	$(MCU_DIR)/drivers/fsl_pwm.c \
 	$(MCU_DIR)/drivers/fsl_snvs_lp.c \
+	$(MCU_DIR)/drivers/fsl_sai.c \
 	$(MCU_DIR)/drivers/fsl_trng.c \
 	$(MCU_DIR)/drivers/fsl_wdog.c \
 	$(MCU_DIR)/project_template/clock_config.c \
@@ -217,6 +218,7 @@ endif
 
 SRC_C += \
 	board_init.c \
+	dma.c \
 	dma_channel.c \
 	drivers/bus/softspi.c \
 	drivers/dht/dht.c \
@@ -231,6 +233,7 @@ SRC_C += \
 	machine_adc.c \
 	machine_bitstream.c \
 	machine_i2c.c \
+	machine_i2s.c \
 	machine_led.c \
 	machine_pin.c \
 	machine_rtc.c \
@@ -389,6 +392,7 @@ SRC_QSTR += \
 	extmod/modonewire.c \
 	extmod/uos_dupterm.c \
 	machine_adc.c \
+	machine_i2s.c \
 	machine_led.c \
 	machine_pin.c \
 	machine_pwm.c \
