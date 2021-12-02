@@ -269,6 +269,8 @@ extern const struct _mp_obj_type_t network_lan_type;
     MICROPY_HW_NIC_ETH  \
 
 #define MICROPY_HW_PIT_NUM_CHANNELS 3
+
+// TODO should this be wrapped in #if MICROPY_PY_MACHINE_I2S ??
 #define MICROPY_HW_MAX_I2S (2)
 
 #define MICROPY_PORT_ROOT_POINTERS \
