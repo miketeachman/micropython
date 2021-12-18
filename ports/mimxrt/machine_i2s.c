@@ -43,14 +43,6 @@
 #include "fsl_dmamux.h"
 #include "fsl_iomuxc.h"
 #include "fsl_sai_edma.h"
-#include "fsl_sai.h"
-#include "fsl_sai_edma.h"
-
-
-#if 0
-#include "pin.h"
-#include "dma.h"
-#endif
 
 #if MICROPY_PY_MACHINE_I2S
 // The I2S module has 3 modes of operation:
@@ -189,6 +181,7 @@ const clock_audio_pll_config_t audioPllConfig = {
     .denominator = 100, /* 30 bit denominator of fractional loop divider */
 };
 
+static edma_handle_t g_dmaHandle = {0};
 AT_NONCACHEABLE_SECTION_ALIGN(static edma_tcd_t s_emdaTcd, 32);
 
 static volatile bool s_Transfer_Done        = false;
@@ -219,35 +212,71 @@ static volatile bool s_transferHalfComplete = false;
 
 #define DEMO_SAI_CHANNEL      (0)
 
-#define DEMO_AUDIO_DATA_CHANNEL (2U)
+#define DEMO_AUDIO_DATA_CHANNEL (2U)  // this is the number of channels Stereo = 2
 #define DEMO_AUDIO_BIT_WIDTH    kSAI_WordWidth16bits
 #define DEMO_AUDIO_SAMPLE_RATE  (kSAI_SampleRate16KHz)
 #define DEMO_AUDIO_MASTER_CLOCK DEMO_SAI_CLK_FREQ
 
-/* Select Audio/Video PLL (786.48 MHz) as sai1 clock source */
-#define DEMO_SAI1_CLOCK_SOURCE_SELECT (2U)
-/* Clock pre divider for sai1 clock source */
-#define DEMO_SAI1_CLOCK_SOURCE_PRE_DIVIDER (1U)
-/* Clock divider for sai1 clock source */
-#define DEMO_SAI1_CLOCK_SOURCE_DIVIDER (63U)
 /* Get frequency of sai1 clock */
 #define DEMO_SAI_CLK_FREQ                                                        \
     (CLOCK_GetFreq(kCLOCK_AudioPllClk) / (DEMO_SAI1_CLOCK_SOURCE_DIVIDER + 1U) / \
      (DEMO_SAI1_CLOCK_SOURCE_PRE_DIVIDER + 1U))
 
+// TODO this struct is repeated in other peripherals... put into common H file?
+typedef struct _iomux_table_t {
+    uint32_t muxRegister;
+    uint32_t muxMode;
+    uint32_t inputRegister;
+    uint32_t inputDaisy;
+    uint32_t configRegister;
+} iomux_table_t;
 
+// TODO is it possible to configure SAI TX such that SAI1_RX_BLK can produce SCK signal?
+#define IOMUX_TABLE_I2S \
+    { IOMUXC_GPIO_AD_B1_14_SAI1_TX_BCLK }, { IOMUXC_GPIO_AD_B1_15_SAI1_TX_SYNC },  {IOMUXC_GPIO_AD_B1_13_SAI1_TX_DATA00 }
 
+/* from BOARD_InitPins() in pin_mux.c
+IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_13_SAI1_TX_DATA00, 1U); 
+IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_14_SAI1_TX_BCLK, 1U); 
+IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_15_SAI1_TX_SYNC, 1U); 
 
+IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_13_SAI1_TX_DATA00, 0x10B0U); 
+IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_14_SAI1_TX_BCLK, 0x10B0U); 
+IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_15_SAI1_TX_SYNC, 0x10B0U); 
+*/
 
+STATIC const iomux_table_t iomux_table_i2s[] = {
+    IOMUX_TABLE_I2S
+};
 
+#define SCK (iomux_table_i2s[index])
+#define WS (iomux_table_i2s[index + 1])
+#define SD (iomux_table_i2s[index + 2])
+
+STATIC bool lpi2s_set_iomux(uint8_t i2s_id) {
+    uint8_t index = (i2s_id - 1) * 3;  // TODO fix this ...
+    
+    // TODO fix this --> hiding "index" inside macro should be improved 
+    if (SCK.muxRegister != 0) {
+        IOMUXC_SetPinMux(SCK.muxRegister, SCK.muxMode, SCK.inputRegister, SCK.inputDaisy, SCK.configRegister, 1U);
+        IOMUXC_SetPinConfig(SCK.muxRegister, SCK.muxMode, SCK.inputRegister, SCK.inputDaisy, SCK.configRegister, 0x10B0u);
+
+        IOMUXC_SetPinMux(WS.muxRegister, WS.muxMode, WS.inputRegister, WS.inputDaisy, WS.configRegister, 1U);
+        IOMUXC_SetPinConfig(WS.muxRegister, WS.muxMode, WS.inputRegister, WS.inputDaisy, WS.configRegister, 0x10B0u);
+        
+        IOMUXC_SetPinMux(SD.muxRegister, SD.muxMode, SD.inputRegister, SD.inputDaisy, SD.configRegister, 1U);
+        IOMUXC_SetPinConfig(SD.muxRegister, SD.muxMode, SD.inputRegister, SD.inputDaisy, SD.configRegister, 0x10B0u);
+        return true;
+    } else {
+        return false;
+    }
+}
 
 void machine_i2s_init0() {
     for (uint8_t i = 0; i < MICROPY_HW_MAX_I2S; i++) {
         MP_STATE_PORT(machine_i2s_obj)[i] = NULL;
     }
 }
-
-uint16_t useless_global;  // TODO remove
 
 // Ring Buffer
 // Thread safe when used with these constraints:
@@ -535,10 +564,11 @@ STATIC void empty_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
 
     uint8_t *dma_buffer_p = &self->dma_buffer_dcache_aligned[dma_buffer_offset];
 
-#if 0
+#if 0  // TODO
     // flush and invalidate cache so the CPU reads data placed into RAM by DMA
     MP_HAL_CLEANINVALIDATE_DCACHE(dma_buffer_p, SIZEOF_HALF_DMA_BUFFER_IN_BYTES);
 #endif
+
     // when space exists, copy samples into ring buffer
     if (ringbuf_available_space(&self->ring_buffer) >= SIZEOF_HALF_DMA_BUFFER_IN_BYTES) {
         for (uint32_t i = 0; i < SIZEOF_HALF_DMA_BUFFER_IN_BYTES; i++) {
@@ -593,222 +623,9 @@ STATIC void feed_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
         // underflow.  clear buffer to transmit "silence" on the I2S bus
         memset(dma_buffer_p, 0, SIZEOF_HALF_DMA_BUFFER_IN_BYTES);
     }
-#if 0
+
     // flush cache to RAM so DMA can read the sample data
     MP_HAL_CLEAN_DCACHE(dma_buffer_p, SIZEOF_HALF_DMA_BUFFER_IN_BYTES);
-#endif    
-}
-
-/* User callback function for EDMA transfer. */
-void EDMA_TX_Callback(edma_handle_t *handle, void *param, bool transferDone, uint32_t tcds)
-{
-
-    if (transferDone)
-    {
-        s_transferComplete = true;
-    }
-    else
-    {
-        s_transferHalfComplete = true;
-    }
-
-    s_playCount++;
-}
-
-
-
-
-STATIC bool i2s_init(machine_i2s_obj_t *self) {
-    
-    edma_config_t dmaConfig               = {0};
-    sai_transceiver_t saiConfig;
-    edma_transfer_config_t transferConfig = {0};
-    uint32_t destAddr                     = SAI_TxGetDataRegisterAddress(SAI1, DEMO_SAI_CHANNEL);
-
-
-
-    BOARD_InitBootClocks();
-    CLOCK_InitAudioPll(&audioPllConfig);
-    
-    /*Clock setting for SAI1*/
-    CLOCK_SetMux(kCLOCK_Sai1Mux, DEMO_SAI1_CLOCK_SOURCE_SELECT);
-    CLOCK_SetDiv(kCLOCK_Sai1PreDiv, DEMO_SAI1_CLOCK_SOURCE_PRE_DIVIDER);
-    CLOCK_SetDiv(kCLOCK_Sai1Div, DEMO_SAI1_CLOCK_SOURCE_DIVIDER);
-
-    /* Init DMAMUX */
-    int chan = allocate_dma_channel();
-    DMAMUX_Init(DMAMUX0);
-    DMAMUX_SetSource(DMAMUX0, chan, DEMO_SAI_TX_SOURCE);
-    DMAMUX_EnableChannel(DMAMUX0, chan);
-    
-    /* Create EDMA handle */
-    /*
-     * dmaConfig.enableRoundRobinArbitration = false;
-     * dmaConfig.enableHaltOnError = true;
-     * dmaConfig.enableContinuousLinkMode = false;
-     * dmaConfig.enableDebugMode = false;
-     */
-    EDMA_GetDefaultConfig(&dmaConfig);
-    EDMA_Init(DMA0, &dmaConfig);  // TODO SPI has this init as well; will this conflict with SPI operation?
-    
-    //edma_handle_t lpspiEdmaMasterRxRegToRxDataHandle;  // from SPI
-    edma_handle_t g_dmaHandle;    
-    EDMA_CreateHandle(&g_dmaHandle, DMA0, chan);
-    EDMA_SetCallback(&g_dmaHandle, EDMA_TX_Callback, NULL);
-    EDMA_ResetChannel(DMA0, g_dmaHandle.channel);
-#if 0      
-#if defined(FSL_FEATURE_EDMA_HAS_CHANNEL_MUX) && FSL_FEATURE_EDMA_HAS_CHANNEL_MUX
-    EDMA_SetChannelMux(DEMO_DMA, DEMO_EDMA_CHANNEL, DEMO_SAI_EDMA_CHANNEL);  // TODO note sure if this is needed?
-#endif
-#endif
-    
-    /* SAI init */
-    SAI_Init(SAI1);
-    
-    /* I2S mode configurations */
-    SAI_GetClassicI2SConfig(&saiConfig, kSAI_WordWidth16bits, kSAI_Stereo, 1U << DEMO_SAI_CHANNEL);
-    saiConfig.syncMode    = kSAI_ModeAsync;
-    saiConfig.masterSlave = kSAI_Master;
-    SAI_TxSetConfig(SAI1, &saiConfig);
-    /* set bit clock divider */
-    SAI_TxSetBitClockRate(SAI1, DEMO_AUDIO_MASTER_CLOCK, DEMO_AUDIO_SAMPLE_RATE, DEMO_AUDIO_BIT_WIDTH,
-                          DEMO_AUDIO_DATA_CHANNEL);
-
-    /* sai rx configurations */
-    BOARD_SAI_RXCONFIG(&saiConfig, DEMO_SAI_RX_SYNC_MODE);  // TODO likely not needed
-    
-    /* Configure and submit transfer structure 1 */
-    EDMA_PrepareTransfer(&transferConfig, self->dma_buffer_dcache_aligned, kSAI_WordWidth16bits / 8U, (void *)destAddr,
-                         kSAI_WordWidth16bits / 8U,
-                         (FSL_FEATURE_SAI_FIFO_COUNT - saiConfig.fifo.fifoWatermark) * (kSAI_WordWidth16bits / 8U),
-                         SIZEOF_DMA_BUFFER_IN_BYTES * 1, kEDMA_MemoryToPeripheral);
-    EDMA_TcdSetTransferConfig(&s_emdaTcd, &transferConfig, &s_emdaTcd);
-    EDMA_TcdEnableInterrupts(&s_emdaTcd, kEDMA_MajorInterruptEnable | kEDMA_HalfInterruptEnable);
-    EDMA_InstallTCD(DMA0, g_dmaHandle.channel, &s_emdaTcd);
-    EDMA_StartTransfer(&g_dmaHandle);
-    /* Enable DMA enable bit */
-    SAI_TxEnableDMA(SAI1, kSAI_FIFORequestDMAEnable, true);
-    /* Enable SAI Tx clock */
-    SAI_TxEnable(SAI1, true);
-    /* Enable the channel FIFO */
-    SAI_TxSetChannelFIFOMask(SAI1, 1U << DEMO_SAI_CHANNEL);
-    
-    mp_printf(MP_PYTHON_PRINTER, "here 1\n");
-
-    /* Waiting until finished. */
-    while (s_playCount < 10)
-    {
-        if (s_transferHalfComplete == true)
-        {
-            mp_printf(MP_PYTHON_PRINTER, "DMA worked 1/2 complete !! =========\n");
-
-            //memcpy(&buffer[0], &music[s_playIndex], BUFFER_SIZE);
-            s_playIndex += SIZEOF_DMA_BUFFER_IN_BYTES;
-            if (s_playIndex >= 10000)
-            {
-                s_playIndex = 0U;
-            }
-            s_transferHalfComplete = false;
-        }
-
-        if (s_transferComplete == true)
-        {
-            mp_printf(MP_PYTHON_PRINTER, "DMA worked Full complete !! =========\n");
-
-            //memcpy(&buffer[BUFFER_SIZE], &music[s_playIndex], BUFFER_SIZE);
-            s_playIndex += SIZEOF_DMA_BUFFER_IN_BYTES;
-            if (s_playIndex >= 10000)
-            {
-                s_playIndex = 0U;
-            }
-            s_transferComplete = false;
-        }
-    }
-
-    /* Once transfer finish, disable SAI instance. */
-    SAI_Deinit(SAI1);
-    mp_printf(MP_PYTHON_PRINTER, "Done i2s_init()\n");
-
-    
-    
-    
-
-#if 0
-
-    // init the GPIO lines
-    GPIO_InitTypeDef GPIO_InitStructure;
-    GPIO_InitStructure.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStructure.Speed = GPIO_SPEED_FAST;
-    GPIO_InitStructure.Pull = GPIO_PULLUP;
-
-    if (self->i2s_id == 1) {
-        self->hi2s.Instance = I2S1;
-        __SPI1_CLK_ENABLE();
-        // configure DMA streams
-        if (self->mode == RX) {
-            self->dma_descr_rx = &dma_I2S_1_RX;
-        } else {
-            self->dma_descr_tx = &dma_I2S_1_TX;
-        }
-    } else if (self->i2s_id == 2) {
-        self->hi2s.Instance = I2S2;
-        __SPI2_CLK_ENABLE();
-        // configure DMA streams
-        if (self->mode == RX) {
-            self->dma_descr_rx = &dma_I2S_2_RX;
-        } else {
-            self->dma_descr_tx = &dma_I2S_2_TX;
-        }
-    } else {
-        // invalid id number; should not get here as i2s object should not
-        // have been created without setting a valid i2s instance number
-        return false;
-    }
-
-    // GPIO Pin initialization
-    if (self->sck != MP_OBJ_TO_PTR(MP_OBJ_NULL)) {
-        GPIO_InitStructure.Pin = self->sck->pin_mask;
-        const pin_af_obj_t *af = pin_find_af(self->sck, AF_FN_I2S, self->i2s_id);
-        GPIO_InitStructure.Alternate = (uint8_t)af->idx;
-        HAL_GPIO_Init(self->sck->gpio, &GPIO_InitStructure);
-    }
-
-    if (self->ws != MP_OBJ_TO_PTR(MP_OBJ_NULL)) {
-        GPIO_InitStructure.Pin = self->ws->pin_mask;
-        const pin_af_obj_t *af = pin_find_af(self->ws, AF_FN_I2S, self->i2s_id);
-        GPIO_InitStructure.Alternate = (uint8_t)af->idx;
-        HAL_GPIO_Init(self->ws->gpio, &GPIO_InitStructure);
-    }
-
-    if (self->sd != MP_OBJ_TO_PTR(MP_OBJ_NULL)) {
-        GPIO_InitStructure.Pin = self->sd->pin_mask;
-        const pin_af_obj_t *af = pin_find_af(self->sd, AF_FN_I2S, self->i2s_id);
-        GPIO_InitStructure.Alternate = (uint8_t)af->idx;
-        HAL_GPIO_Init(self->sd->gpio, &GPIO_InitStructure);
-    }
-
-    if (HAL_I2S_Init(&self->hi2s) == HAL_OK) {
-        // Reset and initialize Tx and Rx DMA channels
-        if (self->mode == RX) {
-            dma_invalidate_channel(self->dma_descr_rx);
-            dma_init(&self->hdma_rx, self->dma_descr_rx, DMA_PERIPH_TO_MEMORY, &self->hi2s);
-            self->hi2s.hdmarx = &self->hdma_rx;
-        } else {  // TX
-            dma_invalidate_channel(self->dma_descr_tx);
-            dma_init(&self->hdma_tx, self->dma_descr_tx, DMA_MEMORY_TO_PERIPH, &self->hi2s);
-            self->hi2s.hdmatx = &self->hdma_tx;
-        }
-
-        __HAL_RCC_PLLI2S_ENABLE();  // start I2S clock
-
-        return true;
-    } else {
-        return false;
-    }
-    
-#endif
-    return true;  // TODO to get it compiling
-
 }
 
 #if 0
@@ -820,15 +637,15 @@ void HAL_I2S_ErrorCallback(I2S_HandleTypeDef *hi2s) {
 
 #if 0
 void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s) {
-#else    
+#else
 void HAL_I2S_RxCpltCallback(void) {
-#endif        
+#endif
     machine_i2s_obj_t *self;
 #if 0
     if (hi2s->Instance == I2S1) {
 #else
     if(1) {
-#endif        
+#endif
         self = MP_STATE_PORT(machine_i2s_obj)[0];
     } else {
         self = MP_STATE_PORT(machine_i2s_obj)[1];
@@ -848,13 +665,13 @@ void HAL_I2S_RxCpltCallback(void) {
 void HAL_I2S_RxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
 #else
 void HAL_I2S_RxHalfCpltCallback(void) {
-#endif    
+#endif
     machine_i2s_obj_t *self;
 #if 0
     if (hi2s->Instance == I2S1) {
 #else
     if(1) {
-#endif        
+#endif
         self = MP_STATE_PORT(machine_i2s_obj)[0];
     } else {
         self = MP_STATE_PORT(machine_i2s_obj)[1];
@@ -870,21 +687,7 @@ void HAL_I2S_RxHalfCpltCallback(void) {
     }
 }
 
-#if 0
-void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s) {
-#else    
-void HAL_I2S_TxCpltCallback(void) {
-#endif    
-    machine_i2s_obj_t *self;
-#if 0
-    if (hi2s->Instance == I2S1) {
-#else
-    if(1) {
-#endif        
-        self = MP_STATE_PORT(machine_i2s_obj)[0];
-    } else {
-        self = MP_STATE_PORT(machine_i2s_obj)[1];
-    }
+void HAL_I2S_TxCpltCallback(machine_i2s_obj_t *self) {
     // for non-blocking operation, this IRQ-based callback handles
     // the write() method requests.
     if ((self->io_mode == NON_BLOCKING) && (self->non_blocking_descriptor.copy_in_progress)) {
@@ -896,21 +699,7 @@ void HAL_I2S_TxCpltCallback(void) {
     feed_dma(self, BOTTOM_HALF);
 }
 
-#if 0
-void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
-#else    
-void HAL_I2S_TxHalfCpltCallback(void) {
-#endif    
-    machine_i2s_obj_t *self;
-#if 0
-    if (hi2s->Instance == I2S1) {
-#else
-    if(1) {
-#endif        
-        self = MP_STATE_PORT(machine_i2s_obj)[0];
-    } else {
-        self = MP_STATE_PORT(machine_i2s_obj)[1];
-    }
+void HAL_I2S_TxHalfCpltCallback(machine_i2s_obj_t *self) {
     // for non-blocking operation, this IRQ-based callback handles
     // the write() method requests.
     if ((self->io_mode == NON_BLOCKING) && (self->non_blocking_descriptor.copy_in_progress)) {
@@ -920,6 +709,157 @@ void HAL_I2S_TxHalfCpltCallback(void) {
     // top half of buffer now emptied,
     // safe to fill the top half while the bottom half of buffer is being emptied
     feed_dma(self, TOP_HALF);
+}
+
+
+// output ~200us pulse
+void diag_pulse_gpio(uint16_t pin_num) {
+    const machine_pin_obj_t *pin = machine_pin_board_pins[pin_num];
+
+    for (uint32_t i=0; i<10000; i++) {
+        mp_hal_pin_high(pin);
+    }
+
+    mp_hal_pin_low(pin);
+}
+
+
+
+    /*! @brief Define callback function for eDMA.
+     *
+     * This callback function is called in the EDMA interrupt handle.
+     * In normal mode, run into callback function means the transfer users need is done.
+     * In scatter gather mode, run into callback function means a transfer control block (tcd) is finished. Not
+     * all transfer finished, users can get the finished tcd numbers using interface EDMA_GetUnusedTCDNumber.
+     *
+     * @param handle EDMA handle pointer, users shall not touch the values inside.
+     * @param userData The callback user parameter pointer. Users can use this parameter to involve things users need to
+     *                 change in EDMA callback function.
+     * @param transferDone If the current loaded transfer done. In normal mode it means if all transfer done. In scatter
+     *                     gather mode, this parameter shows is the current transfer block in EDMA register is done. As the
+     *                     load of core is different, it will be different if the new tcd loaded into EDMA registers while
+     *                     this callback called. If true, it always means new tcd still not loaded into registers, while
+     *                     false means new tcd already loaded into registers.
+     * @param tcds How many tcds are done from the last callback. This parameter only used in scatter gather mode. It
+     *             tells user how many tcds are finished between the last callback and this.
+     */
+    //typedef void (*edma_callback)(struct _edma_handle *handle, void *userData, bool transferDone, uint32_t tcds);
+
+
+/* User callback function for EDMA transfer. */
+void EDMA_TX_Callback(edma_handle_t *handle, void *userData, bool transferDone, uint32_t tcds)
+{
+    machine_i2s_obj_t *self = userData;
+    //mp_printf(MP_PYTHON_PRINTER, "i2s_id = %d, transferDone = %d\n", self->i2s_id, transferDone);
+
+    // pulse GPIO pin
+    //diag_pulse_gpio(32);
+
+    if (transferDone)
+    {
+        HAL_I2S_TxCpltCallback(self);
+    }
+    else
+    {
+        HAL_I2S_TxHalfCpltCallback(self);
+    }
+}
+
+
+STATIC bool i2s_init(machine_i2s_obj_t *self) {
+    
+    //mp_printf(MP_PYTHON_PRINTER, "start i2s_init()\n");
+
+    CLOCK_InitAudioPll(&audioPllConfig);
+    
+    /*Clock setting for SAI1*/
+    CLOCK_SetMux(kCLOCK_Sai1Mux, DEMO_SAI1_CLOCK_SOURCE_SELECT);
+    CLOCK_SetDiv(kCLOCK_Sai1PreDiv, DEMO_SAI1_CLOCK_SOURCE_PRE_DIVIDER);
+    CLOCK_SetDiv(kCLOCK_Sai1Div, DEMO_SAI1_CLOCK_SOURCE_DIVIDER);
+
+    // Configure board-specific pin MUX based on the hardware device number.
+    lpi2s_set_iomux(self->i2s_id);
+    
+    /* Init DMAMUX */
+    int chan = allocate_dma_channel();
+    DMAMUX_Init(DMAMUX0);
+    DMAMUX_SetSource(DMAMUX0, chan, DEMO_SAI_TX_SOURCE);
+    DMAMUX_EnableChannel(DMAMUX0, chan);
+    
+    /* Create EDMA handle */
+    /*
+     * dmaConfig.enableRoundRobinArbitration = false;
+     * dmaConfig.enableHaltOnError = true;
+     * dmaConfig.enableContinuousLinkMode = false;
+     * dmaConfig.enableDebugMode = false;
+     */
+    edma_config_t dmaConfig;
+    memset(&dmaConfig, 0, sizeof(dmaConfig));
+    EDMA_GetDefaultConfig(&dmaConfig);
+    EDMA_Init(DMA0, &dmaConfig);  // TODO SPI has this init as well; will this conflict with SPI operation?
+
+    EDMA_CreateHandle(&g_dmaHandle, DMA0, chan);
+    EDMA_SetCallback(&g_dmaHandle, EDMA_TX_Callback, self);
+    EDMA_ResetChannel(DMA0, chan);
+    
+    /* SAI init */
+    SAI_Init(SAI1);
+    
+    /* I2S mode configurations */
+    sai_transceiver_t saiConfig;
+    memset(&saiConfig, 0, sizeof(saiConfig));
+    SAI_GetClassicI2SConfig(&saiConfig, kSAI_WordWidth16bits, kSAI_Stereo, 1U << DEMO_SAI_CHANNEL);
+    saiConfig.syncMode    = kSAI_ModeAsync;
+    saiConfig.masterSlave = kSAI_Master;
+    SAI_TxSetConfig(SAI1, &saiConfig);
+    /* set bit clock divider */
+    SAI_TxSetBitClockRate(SAI1, DEMO_AUDIO_MASTER_CLOCK, DEMO_AUDIO_SAMPLE_RATE, DEMO_AUDIO_BIT_WIDTH,
+                          DEMO_AUDIO_DATA_CHANNEL);
+    /* sai rx configurations */
+    //BOARD_SAI_RXCONFIG(&saiConfig, DEMO_SAI_RX_SYNC_MODE);  // TODO likely not needed
+    
+    MP_HAL_CLEAN_DCACHE(self->dma_buffer_dcache_aligned, SIZEOF_DMA_BUFFER_IN_BYTES);
+
+    /* Configure and submit transfer structure 1 */
+
+    // TODO see if the combined SAI/EDMA API would simplify the implementation:  e.g.  SAI_TransferSendEDMA()
+    uint32_t destAddr = SAI_TxGetDataRegisterAddress(SAI1, DEMO_SAI_CHANNEL);
+
+    edma_transfer_config_t transferConfig;
+    memset(&transferConfig, 0, sizeof(transferConfig));
+    EDMA_PrepareTransfer(&transferConfig,
+            self->dma_buffer_dcache_aligned, kSAI_WordWidth16bits / 8U,
+            (void *)destAddr, kSAI_WordWidth16bits / 8U,
+            (FSL_FEATURE_SAI_FIFO_COUNT - saiConfig.fifo.fifoWatermark) * (kSAI_WordWidth16bits / 8U),
+            SIZEOF_DMA_BUFFER_IN_BYTES, kEDMA_MemoryToPeripheral);
+    memset(&s_emdaTcd, 0, sizeof(s_emdaTcd));
+    EDMA_TcdSetTransferConfig(&s_emdaTcd, &transferConfig, &s_emdaTcd);
+    EDMA_TcdEnableInterrupts(&s_emdaTcd, kEDMA_MajorInterruptEnable | kEDMA_HalfInterruptEnable);
+    EDMA_InstallTCD(DMA0, chan, &s_emdaTcd);
+    EDMA_StartTransfer(&g_dmaHandle);
+
+    /* Enable DMA enable bit */
+    SAI_TxEnableDMA(SAI1, kSAI_FIFORequestDMAEnable, true);
+    /* Enable SAI Tx clock */
+    SAI_TxEnable(SAI1, true);  // <--- SD Card failure and .Format failure with this line
+    /* Enable the channel FIFO */
+    SAI_TxSetChannelFIFOMask(SAI1, 1U << DEMO_SAI_CHANNEL);
+
+#if 0  // TODO this goes into deinit method
+    /* Disable the channel FIFO */
+    SAI_TxSetChannelFIFOMask(SAI1, 0U << DEMO_SAI_CHANNEL);
+
+    /* Disable SAI Tx clock */
+    SAI_TxEnable(SAI1, false);
+
+    /* Disable DMA enable bit */
+    SAI_TxEnableDMA(SAI1, kSAI_FIFORequestDMAEnable, false);
+
+    /* Disable SAI instance. */
+    SAI_Deinit(SAI1);
+#endif
+
+    return true;  // TODO to get it compiling
 }
 
 STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -957,13 +897,9 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     //
 
     // are I2S pin assignments valid?
+#if 0
+    const machine_pin_obj_t *pin = pin_find(args[ARG_sck].u_obj);
     
-    const machine_pin_obj_t *pin = pin_find(args[ARG_sck].u_obj);    
-    if (pin->af_list_len != 0) {
-        useless_global = 1;
-        mp_printf(MP_PYTHON_PRINTER, "af_list_len = %d\n", pin->af_list_len);
-    }
-#if 0    
     typedef struct {
         mp_obj_base_t base;
         qstr name;  // pad name
@@ -977,7 +913,6 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         const machine_pin_adc_obj_t *adc_list; // pointer to list with ADC options
     } machine_pin_obj_t;
 #endif
-    
     
     
 #if 0    
@@ -1126,32 +1061,33 @@ STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
 
 STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_args, size_t n_kw_args, const mp_obj_t *args) {
     mp_arg_check_num(n_pos_args, n_kw_args, 1, MP_OBJ_FUN_ARGS_MAX, true);
-    uint8_t i2s_id = mp_obj_get_int(args[0]);
 
-    if (i2s_id >= MICROPY_HW_MAX_I2S) {
+    uint8_t i2s_id = mp_obj_get_int(args[0]);
+    if (i2s_id < 1 || i2s_id > MICROPY_HW_MAX_I2S) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid id"));
     }
 
+    uint8_t i2s_id_zero_base = i2s_id - 1;
     machine_i2s_obj_t *self;
-    if (MP_STATE_PORT(machine_i2s_obj)[i2s_id] == NULL) {
+    if (MP_STATE_PORT(machine_i2s_obj)[i2s_id_zero_base] == NULL) {
         self = m_new_obj(machine_i2s_obj_t);
-        MP_STATE_PORT(machine_i2s_obj)[i2s_id] = self;
+        MP_STATE_PORT(machine_i2s_obj)[i2s_id_zero_base] = self;
         self->base.type = &machine_i2s_type;
         self->i2s_id = i2s_id;
     } else {
-        self = MP_STATE_PORT(machine_i2s_obj)[i2s_id];
+        self = MP_STATE_PORT(machine_i2s_obj)[i2s_id_zero_base];
         machine_i2s_deinit(MP_OBJ_FROM_PTR(self));
     }
 
     // align DMA buffer start to the cache line size (32 bytes)
     self->dma_buffer_dcache_aligned = (uint8_t *)((uint32_t)(self->dma_buffer + 0x1f) & ~0x1f);
 
+    // TODO fill the DMA buffer with NULLs to start?
+    memset(self->dma_buffer_dcache_aligned, 0, SIZEOF_DMA_BUFFER_IN_BYTES);
+
     mp_map_t kw_args;
     mp_map_init_fixed_table(&kw_args, n_kw_args, args + n_pos_args);
     machine_i2s_init_helper(self, n_pos_args - 1, args + 1, &kw_args);
-
-    mp_printf(MP_PYTHON_PRINTER, "After machine_i2s_init_helper()\n");
-
     return MP_OBJ_FROM_PTR(self);
 }
 
