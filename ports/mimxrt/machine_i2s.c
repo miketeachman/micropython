@@ -99,6 +99,28 @@
 #define NUM_I2S_USER_FORMATS (4)
 #define I2S_RX_FRAME_SIZE_IN_BYTES (8)
 
+/* Select Audio/Video PLL (786.48 MHz) as SAI clock source */
+#define SAI_CLOCK_SOURCE_SELECT (2U)
+/* Clock pre divider for SAI clock source */
+#define SAI_CLOCK_SOURCE_PRE_DIVIDER (1U)
+/* Clock divider for SAI clock source */
+#define SAI_CLOCK_SOURCE_DIVIDER (63U)
+
+/* DMA */
+#define DMAMUX0            (DMAMUX)
+#define DEMO_DMA           (DMA0)
+#define DEMO_EDMA_CHANNEL  (0U)
+#define DEMO_SAI_RX_SYNC_MODE kSAI_ModeSync
+#define DEMO_SAI_CHANNEL      (0)
+#define DEMO_AUDIO_DATA_CHANNEL (2U)  // this is the number of channels Stereo = 2
+#define DEMO_AUDIO_MASTER_CLOCK (DEMO_SAI_CLK_FREQ)
+
+/* Get frequency of SAI clock */
+#define DEMO_SAI_CLK_FREQ  \
+    (CLOCK_GetFreq(kCLOCK_AudioPllClk) / (SAI_CLOCK_SOURCE_DIVIDER + 1U) / \
+    (SAI_CLOCK_SOURCE_PRE_DIVIDER + 1U))
+
+
 typedef enum {
     RX,
     TX
@@ -151,13 +173,8 @@ typedef struct _machine_i2s_obj_t {
     uint8_t *ring_buffer_storage;
     non_blocking_descriptor_t non_blocking_descriptor;
     io_mode_t io_mode;
-#if 0    
-    I2S_HandleTypeDef hi2s;
-    DMA_HandleTypeDef hdma_tx;
-    DMA_HandleTypeDef hdma_rx;
-    const dma_descr_t *dma_descr_tx;
-    const dma_descr_t *dma_descr_rx;
-#endif    
+    I2S_Type *i2s_inst;
+    uint8_t i2s_hw_id;
 } machine_i2s_obj_t;
 
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in);
@@ -172,8 +189,7 @@ STATIC const int8_t i2s_frame_map[NUM_I2S_USER_FORMATS][I2S_RX_FRAME_SIZE_IN_BYT
     { 2,  3,  0,  1,  6,  7,  4,  5 },  // Stereo, 32-bits
 };
 
-
-
+// TODO understand and add comments explaining these settings
 const clock_audio_pll_config_t audioPllConfig = {
     .loopDivider = 32,  /* PLL loop divider. Valid range for DIV_SELECT divider value: 27~54. */
     .postDivider = 1,   /* Divider after the PLL, should only be 1, 2, 4, 8, 16. */
@@ -191,38 +207,8 @@ static volatile bool s_transferComplete     = false;
 static volatile bool s_transferHalfComplete = false;
 
 
-/* Select Audio/Video PLL (786.48 MHz) as sai1 clock source */
-#define DEMO_SAI1_CLOCK_SOURCE_SELECT (2U)
-/* Clock pre divider for sai1 clock source */
-#define DEMO_SAI1_CLOCK_SOURCE_PRE_DIVIDER (1U)
-/* Clock divider for sai1 clock source */
-#define DEMO_SAI1_CLOCK_SOURCE_DIVIDER (63U)
 
-/* DMA */
-#define DMAMUX0            DMAMUX
-#define DEMO_DMA           DMA0
-#define DEMO_EDMA_CHANNEL  (0U)
-#define DEMO_SAI_TX_SOURCE kDmaRequestMuxSai1Tx
-
-#define DEMO_SAI_RX_SYNC_MODE kSAI_ModeSync
-
-
-#define BOARD_SAI_RXCONFIG(config, mode)
-
-
-#define DEMO_SAI_CHANNEL      (0)
-
-#define DEMO_AUDIO_DATA_CHANNEL (2U)  // this is the number of channels Stereo = 2
-#define DEMO_AUDIO_BIT_WIDTH    kSAI_WordWidth16bits
-#define DEMO_AUDIO_SAMPLE_RATE  (kSAI_SampleRate16KHz)
-#define DEMO_AUDIO_MASTER_CLOCK DEMO_SAI_CLK_FREQ
-
-/* Get frequency of sai1 clock */
-#define DEMO_SAI_CLK_FREQ                                                        \
-    (CLOCK_GetFreq(kCLOCK_AudioPllClk) / (DEMO_SAI1_CLOCK_SOURCE_DIVIDER + 1U) / \
-     (DEMO_SAI1_CLOCK_SOURCE_PRE_DIVIDER + 1U))
-
-// TODO this struct is repeated in other peripherals... put into common H file?
+// TODO this struct is repeated in other MIMXRT peripherals... put into common H file?
 typedef struct _iomux_table_t {
     uint32_t muxRegister;
     uint32_t muxMode;
@@ -231,30 +217,27 @@ typedef struct _iomux_table_t {
     uint32_t configRegister;
 } iomux_table_t;
 
+STATIC const uint8_t i2s_index_table[] = MICROPY_HW_I2S_INDEX;
+STATIC I2S_Type *i2s_base_ptr_table[] = I2S_BASE_PTRS;
+STATIC const iomux_table_t i2s_iomux_table[] = { IOMUX_TABLE_I2S };
+STATIC const int i2s_clock_mux[] = I2S_CLOCK_MUX;
+STATIC const int i2s_clock_pre_div[] = I2S_CLOCK_PRE_DIV;
+STATIC const int i2s_clock_div[] = I2S_CLOCK_DIV;
+//STATIC uint16_t i2s_dma_req_src_rx[] = I2S_DMA_REQ_SRC_RX;
+STATIC const uint16_t i2s_dma_req_src_tx[] = I2S_DMA_REQ_SRC_TX;
+
+
+#define MICROPY_HW_I2S_NUM ARRAY_SIZE(i2s_index_table)
+
 // TODO is it possible to configure SAI TX such that SAI1_RX_BLK can produce SCK signal?
-#define IOMUX_TABLE_I2S \
-    { IOMUXC_GPIO_AD_B1_14_SAI1_TX_BCLK }, { IOMUXC_GPIO_AD_B1_15_SAI1_TX_SYNC },  {IOMUXC_GPIO_AD_B1_13_SAI1_TX_DATA00 }
+// it should be possible
 
-/* from BOARD_InitPins() in pin_mux.c
-IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_13_SAI1_TX_DATA00, 1U); 
-IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_14_SAI1_TX_BCLK, 1U); 
-IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_15_SAI1_TX_SYNC, 1U); 
+#define SCK (i2s_iomux_table[index])
+#define WS (i2s_iomux_table[index + 1])
+#define SD (i2s_iomux_table[index + 2])
 
-IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_13_SAI1_TX_DATA00, 0x10B0U); 
-IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_14_SAI1_TX_BCLK, 0x10B0U); 
-IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_15_SAI1_TX_SYNC, 0x10B0U); 
-*/
-
-STATIC const iomux_table_t iomux_table_i2s[] = {
-    IOMUX_TABLE_I2S
-};
-
-#define SCK (iomux_table_i2s[index])
-#define WS (iomux_table_i2s[index + 1])
-#define SD (iomux_table_i2s[index + 2])
-
-STATIC bool lpi2s_set_iomux(uint8_t i2s_id) {
-    uint8_t index = (i2s_id - 1) * 3;  // TODO fix this ...
+STATIC bool i2s_set_iomux(uint8_t i2s) {
+    uint8_t index = (i2s - 1) * 3;  // TODO fix this ...
     
     // TODO fix this --> hiding "index" inside macro should be improved 
     if (SCK.muxRegister != 0) {
@@ -331,38 +314,6 @@ STATIC size_t ringbuf_available_space(ring_buf_t *rbuf) {
     return rbuf->size - ringbuf_available_data(rbuf) - 1;
 }
 
-//  For 32-bit audio samples, the STM32 HAL API expects each 32-bit sample to be encoded
-//  in an unusual byte ordering:  Byte_2, Byte_3, Byte_0, Byte_1
-//      where:  Byte_0 is the least significant byte of the 32-bit sample
-//
-//  The following function takes a buffer containing 32-bits sample values formatted as little endian
-//  and performs an in-place modification into the STM32 HAL API convention
-//
-//  Example:
-//
-//   wav_samples[] = [L_0-7,   L_8-15,  L_16-23, L_24-31, R_0-7,   R_8-15,  R_16-23, R_24-31] =  [Left channel, Right channel]
-//   stm_api[] =     [L_16-23, L_24-31, L_0-7,   L_8-15,  R_16-23, R_24-31, R_0-7,   R_8-15] = [Left channel, Right channel]
-//
-//   where:
-//      L_0-7 is the least significant byte of the 32 bit sample in the Left channel
-//      L_24-31 is the most significant byte of the 32 bit sample in the Left channel
-//
-//   wav_samples[] =  [0x99, 0xBB, 0x11, 0x22, 0x44, 0x55, 0xAB, 0x77] = [Left channel, Right channel]
-//   stm_api[] =      [0x11, 0x22, 0x99, 0xBB, 0xAB, 0x77, 0x44, 0x55] = [Left channel, Right channel]
-//
-//   where:
-//      LEFT Channel =  0x99, 0xBB, 0x11, 0x22
-//      RIGHT Channel = 0x44, 0x55, 0xAB, 0x77
-STATIC void reformat_32_bit_samples(int32_t *sample, uint32_t num_samples) {
-    int16_t sample_ms;
-    int16_t sample_ls;
-    for (uint32_t i = 0; i < num_samples; i++) {
-        sample_ls = sample[i] & 0xFFFF;
-        sample_ms = sample[i] >> 16;
-        sample[i] = (sample_ls << 16) + sample_ms;
-    }
-}
-
 STATIC int8_t get_frame_mapping_index(int8_t bits, format_t format) {
     if (format == MONO) {
         if (bits == 16) {
@@ -379,21 +330,19 @@ STATIC int8_t get_frame_mapping_index(int8_t bits, format_t format) {
     }
 }
 
-#if 0
 STATIC int8_t get_dma_bits(uint16_t mode, int8_t bits) {
     if (mode == TX) {
         if (bits == 16) {
-            return kSAI_WordWidth16bits;
+            return 16;
         } else {
-            return kSAI_WordWidth32bits;
+            return 32;
         }
         return bits;
     } else { // Master Rx
         // always read 32 bit words for I2S e.g.  I2S MEMS microphones
-        return kSAI_WordWidth32bits;
+        return 32;
     }
 }
-#endif
 
 STATIC uint32_t fill_appbuf_from_ringbuf(machine_i2s_obj_t *self, mp_buffer_info_t *appbuf) {
 
@@ -459,6 +408,7 @@ exit:
     return num_bytes_copied_to_appbuf;
 }
 
+#if 0
 // function is used in IRQ context
 STATIC void fill_appbuf_from_ringbuf_non_blocking(machine_i2s_obj_t *self) {
 
@@ -500,6 +450,7 @@ STATIC void fill_appbuf_from_ringbuf_non_blocking(machine_i2s_obj_t *self) {
         }
     }
 }
+#endif
 
 STATIC uint32_t copy_appbuf_to_ringbuf(machine_i2s_obj_t *self, mp_buffer_info_t *appbuf) {
 
@@ -552,6 +503,7 @@ STATIC void copy_appbuf_to_ringbuf_non_blocking(machine_i2s_obj_t *self) {
     }
 }
 
+#if 0
 // function is used in IRQ context
 STATIC void empty_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
     uint16_t dma_buffer_offset = 0;
@@ -564,10 +516,8 @@ STATIC void empty_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
 
     uint8_t *dma_buffer_p = &self->dma_buffer_dcache_aligned[dma_buffer_offset];
 
-#if 0  // TODO
     // flush and invalidate cache so the CPU reads data placed into RAM by DMA
     MP_HAL_CLEANINVALIDATE_DCACHE(dma_buffer_p, SIZEOF_HALF_DMA_BUFFER_IN_BYTES);
-#endif
 
     // when space exists, copy samples into ring buffer
     if (ringbuf_available_space(&self->ring_buffer) >= SIZEOF_HALF_DMA_BUFFER_IN_BYTES) {
@@ -576,6 +526,7 @@ STATIC void empty_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
         }
     }
 }
+#endif
 
 // function is used in IRQ context
 STATIC void feed_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
@@ -616,9 +567,9 @@ STATIC void feed_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
         }
 
         // reformat 32 bit samples to match STM32 HAL API format
-        if (self->bits == 32) {
-            reformat_32_bit_samples((int32_t *)dma_buffer_p, SIZEOF_HALF_DMA_BUFFER_IN_BYTES / (sizeof(uint32_t)));
-        }
+        //if (self->bits == 32) {
+        //    reformat_32_bit_samples((int32_t *)dma_buffer_p, SIZEOF_HALF_DMA_BUFFER_IN_BYTES / (sizeof(uint32_t)));
+        //}
     } else {
         // underflow.  clear buffer to transmit "silence" on the I2S bus
         memset(dma_buffer_p, 0, SIZEOF_HALF_DMA_BUFFER_IN_BYTES);
@@ -629,23 +580,9 @@ STATIC void feed_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
 }
 
 #if 0
-void HAL_I2S_ErrorCallback(I2S_HandleTypeDef *hi2s) {
-    uint32_t errorCode = HAL_I2S_GetError(hi2s);
-    printf("I2S Error = %ld\n", errorCode);
-}
-#endif
-
-#if 0
 void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s) {
-#else
-void HAL_I2S_RxCpltCallback(void) {
-#endif
     machine_i2s_obj_t *self;
-#if 0
     if (hi2s->Instance == I2S1) {
-#else
-    if(1) {
-#endif
         self = MP_STATE_PORT(machine_i2s_obj)[0];
     } else {
         self = MP_STATE_PORT(machine_i2s_obj)[1];
@@ -660,18 +597,12 @@ void HAL_I2S_RxCpltCallback(void) {
         fill_appbuf_from_ringbuf_non_blocking(self);
     }
 }
+#endif
 
 #if 0
 void HAL_I2S_RxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
-#else
-void HAL_I2S_RxHalfCpltCallback(void) {
-#endif
     machine_i2s_obj_t *self;
-#if 0
     if (hi2s->Instance == I2S1) {
-#else
-    if(1) {
-#endif
         self = MP_STATE_PORT(machine_i2s_obj)[0];
     } else {
         self = MP_STATE_PORT(machine_i2s_obj)[1];
@@ -686,6 +617,7 @@ void HAL_I2S_RxHalfCpltCallback(void) {
         fill_appbuf_from_ringbuf_non_blocking(self);
     }
 }
+#endif
 
 void HAL_I2S_TxCpltCallback(machine_i2s_obj_t *self) {
     // for non-blocking operation, this IRQ-based callback handles
@@ -768,31 +700,20 @@ void EDMA_TX_Callback(edma_handle_t *handle, void *userData, bool transferDone, 
 
 STATIC bool i2s_init(machine_i2s_obj_t *self) {
     
-    //mp_printf(MP_PYTHON_PRINTER, "start i2s_init()\n");
-
     CLOCK_InitAudioPll(&audioPllConfig);
     
-    /*Clock setting for SAI1*/
-    CLOCK_SetMux(kCLOCK_Sai1Mux, DEMO_SAI1_CLOCK_SOURCE_SELECT);
-    CLOCK_SetDiv(kCLOCK_Sai1PreDiv, DEMO_SAI1_CLOCK_SOURCE_PRE_DIVIDER);
-    CLOCK_SetDiv(kCLOCK_Sai1Div, DEMO_SAI1_CLOCK_SOURCE_DIVIDER);
+    CLOCK_SetMux(i2s_clock_mux[self->i2s_hw_id], SAI_CLOCK_SOURCE_SELECT);
+    CLOCK_SetDiv(i2s_clock_pre_div[self->i2s_hw_id], SAI_CLOCK_SOURCE_PRE_DIVIDER);
+    CLOCK_SetDiv(i2s_clock_div[self->i2s_hw_id], SAI_CLOCK_SOURCE_DIVIDER);
 
-    // Configure board-specific pin MUX based on the hardware device number.
-    lpi2s_set_iomux(self->i2s_id);
+    i2s_set_iomux(self->i2s_hw_id);
     
-    /* Init DMAMUX */
     int chan = allocate_dma_channel();
     DMAMUX_Init(DMAMUX0);
-    DMAMUX_SetSource(DMAMUX0, chan, DEMO_SAI_TX_SOURCE);
+    // TODO this only covers Tx, need to switch on i2s mode
+    DMAMUX_SetSource(DMAMUX, chan, i2s_dma_req_src_tx[self->i2s_hw_id]);
     DMAMUX_EnableChannel(DMAMUX0, chan);
     
-    /* Create EDMA handle */
-    /*
-     * dmaConfig.enableRoundRobinArbitration = false;
-     * dmaConfig.enableHaltOnError = true;
-     * dmaConfig.enableContinuousLinkMode = false;
-     * dmaConfig.enableDebugMode = false;
-     */
     edma_config_t dmaConfig;
     memset(&dmaConfig, 0, sizeof(dmaConfig));
     EDMA_GetDefaultConfig(&dmaConfig);
@@ -802,62 +723,43 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     EDMA_SetCallback(&g_dmaHandle, EDMA_TX_Callback, self);
     EDMA_ResetChannel(DMA0, chan);
     
-    /* SAI init */
-    SAI_Init(SAI1);
+    SAI_Init(self->i2s_inst);
     
-    /* I2S mode configurations */
     sai_transceiver_t saiConfig;
     memset(&saiConfig, 0, sizeof(saiConfig));
-    SAI_GetClassicI2SConfig(&saiConfig, kSAI_WordWidth16bits, kSAI_Stereo, 1U << DEMO_SAI_CHANNEL);
+    SAI_GetClassicI2SConfig(&saiConfig, get_dma_bits(self->mode, self->bits), kSAI_Stereo, 1U << DEMO_SAI_CHANNEL);
     saiConfig.syncMode    = kSAI_ModeAsync;
     saiConfig.masterSlave = kSAI_Master;
-    SAI_TxSetConfig(SAI1, &saiConfig);
-    /* set bit clock divider */
-    SAI_TxSetBitClockRate(SAI1, DEMO_AUDIO_MASTER_CLOCK, DEMO_AUDIO_SAMPLE_RATE, DEMO_AUDIO_BIT_WIDTH,
+
+    SAI_TxSetConfig(self->i2s_inst, &saiConfig);
+    SAI_TxSetBitClockRate(self->i2s_inst, DEMO_AUDIO_MASTER_CLOCK, self->rate, get_dma_bits(self->mode, self->bits),
                           DEMO_AUDIO_DATA_CHANNEL);
-    /* sai rx configurations */
-    //BOARD_SAI_RXCONFIG(&saiConfig, DEMO_SAI_RX_SYNC_MODE);  // TODO likely not needed
     
     MP_HAL_CLEAN_DCACHE(self->dma_buffer_dcache_aligned, SIZEOF_DMA_BUFFER_IN_BYTES);
 
-    /* Configure and submit transfer structure 1 */
+    uint32_t destAddr = SAI_TxGetDataRegisterAddress(self->i2s_inst, DEMO_SAI_CHANNEL);
 
-    // TODO see if the combined SAI/EDMA API would simplify the implementation:  e.g.  SAI_TransferSendEDMA()
-    uint32_t destAddr = SAI_TxGetDataRegisterAddress(SAI1, DEMO_SAI_CHANNEL);
 
     edma_transfer_config_t transferConfig;
     memset(&transferConfig, 0, sizeof(transferConfig));
+    uint8_t bytes_per_sample = get_dma_bits(self->mode, self->bits) / 8;
     EDMA_PrepareTransfer(&transferConfig,
-            self->dma_buffer_dcache_aligned, kSAI_WordWidth16bits / 8U,
-            (void *)destAddr, kSAI_WordWidth16bits / 8U,
-            (FSL_FEATURE_SAI_FIFO_COUNT - saiConfig.fifo.fifoWatermark) * (kSAI_WordWidth16bits / 8U),
+            self->dma_buffer_dcache_aligned, bytes_per_sample,
+            (void *)destAddr, bytes_per_sample,
+            (FSL_FEATURE_SAI_FIFO_COUNT - saiConfig.fifo.fifoWatermark) * bytes_per_sample,
             SIZEOF_DMA_BUFFER_IN_BYTES, kEDMA_MemoryToPeripheral);
     memset(&s_emdaTcd, 0, sizeof(s_emdaTcd));
+
+    // use scatter/gather feature, with one TCD linked back to itself.
+    // TODO rename variables such as s_emdaTcd, g_dmaHandle
     EDMA_TcdSetTransferConfig(&s_emdaTcd, &transferConfig, &s_emdaTcd);
     EDMA_TcdEnableInterrupts(&s_emdaTcd, kEDMA_MajorInterruptEnable | kEDMA_HalfInterruptEnable);
     EDMA_InstallTCD(DMA0, chan, &s_emdaTcd);
     EDMA_StartTransfer(&g_dmaHandle);
 
-    /* Enable DMA enable bit */
-    SAI_TxEnableDMA(SAI1, kSAI_FIFORequestDMAEnable, true);
-    /* Enable SAI Tx clock */
-    SAI_TxEnable(SAI1, true);  // <--- SD Card failure and .Format failure with this line
-    /* Enable the channel FIFO */
-    SAI_TxSetChannelFIFOMask(SAI1, 1U << DEMO_SAI_CHANNEL);
-
-#if 0  // TODO this goes into deinit method
-    /* Disable the channel FIFO */
-    SAI_TxSetChannelFIFOMask(SAI1, 0U << DEMO_SAI_CHANNEL);
-
-    /* Disable SAI Tx clock */
-    SAI_TxEnable(SAI1, false);
-
-    /* Disable DMA enable bit */
-    SAI_TxEnableDMA(SAI1, kSAI_FIFORequestDMAEnable, false);
-
-    /* Disable SAI instance. */
-    SAI_Deinit(SAI1);
-#endif
+    SAI_TxEnableDMA(self->i2s_inst, kSAI_FIFORequestDMAEnable, true);
+    SAI_TxEnable(self->i2s_inst, true);
+    SAI_TxSetChannelFIFOMask(self->i2s_inst, 1U << DEMO_SAI_CHANNEL);
 
     return true;  // TODO to get it compiling
 }
@@ -889,65 +791,52 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_pos_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-#if 0    
-    memset(&self->hi2s, 0, sizeof(self->hi2s));
-#endif
     //
     // ---- Check validity of arguments ----
     //
 
     // are I2S pin assignments valid?
 #if 0
-    const machine_pin_obj_t *pin = pin_find(args[ARG_sck].u_obj);
-    
-    typedef struct {
-        mp_obj_base_t base;
-        qstr name;  // pad name
-        GPIO_Type *gpio;  // gpio instance for pin
-        uint32_t pin;  // pin number
-        uint32_t muxRegister;
-        uint32_t configRegister;
-        uint8_t af_list_len;  // length of available alternate functions list
-        uint8_t adc_list_len; // length of available ADC options list
-        const machine_pin_af_obj_t *af_list;  // pointer to list with alternate functions
-        const machine_pin_adc_obj_t *adc_list; // pointer to list with ADC options
-    } machine_pin_obj_t;
+    const machine_pin_af_obj_t *pin_af;
 #endif
-    
-    
-#if 0    
-    const pin_af_obj_t *pin_af;
-    
-    // is SCK valid?
-    if (mp_obj_is_type(args[ARG_sck].u_obj, &pin_type)) {
-        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_sck].u_obj), AF_FN_I2S, self->i2s_id);
-        if (pin_af->type != AF_PIN_TYPE_I2S_CK) {
-            mp_raise_ValueError(MP_ERROR_TEXT("invalid SCK pin"));
-        }
+
+    // TODO support configuration of pins on a per-pin basic (not locked to SAI instance)
+    if (mp_obj_is_type(args[ARG_sck].u_obj, &machine_pin_type)) {
+#if 0
+        machine_pin_obj_t *pin = args[ARG_sck].u_obj;
+        printf("pin->name: %d\n", pin->name);
+        printf("pin->name qstr: %s\n", qstr_str(pin->name));
+        printf("pin->pin: %ld\n", pin->pin);
+        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_sck].u_obj), PIN_AF_MODE_ALT5);
+        printf("pin_af->name: %d\n", pin_af->name);
+        printf("name: %s\n", qstr_str(pin_af->name));
+        printf("pin_af->af_mode: %d\n", pin_af->af_mode);
+#endif
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("SCK not a Pin type"));
     }
 
-    // is WS valid?
-    if (mp_obj_is_type(args[ARG_ws].u_obj, &pin_type)) {
-        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_ws].u_obj), AF_FN_I2S, self->i2s_id);
-        if (pin_af->type != AF_PIN_TYPE_I2S_WS) {
-            mp_raise_ValueError(MP_ERROR_TEXT("invalid WS pin"));
-        }
+    if (mp_obj_is_type(args[ARG_ws].u_obj, &machine_pin_type)) {
+#if 0
+        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_ws].u_obj), PIN_AF_MODE_ALT5);
+        printf("pin_af->name: %d\n", pin_af->name);
+        printf("name: %s\n", qstr_str(pin_af->name));
+        printf("pin_af->af_mode: %d\n", pin_af->af_mode);
+#endif
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("WS not a Pin type"));
     }
 
-    // is SD valid?
-    if (mp_obj_is_type(args[ARG_sd].u_obj, &pin_type)) {
-        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_sd].u_obj), AF_FN_I2S, self->i2s_id);
-        if (pin_af->type != AF_PIN_TYPE_I2S_SD) {
-            mp_raise_ValueError(MP_ERROR_TEXT("invalid SD pin"));
-        }
+    if (mp_obj_is_type(args[ARG_sd].u_obj, &machine_pin_type)) {
+#if 0
+        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_sd].u_obj), PIN_AF_MODE_ALT5);
+        printf("pin_af->name: %d\n", pin_af->name);
+        printf("name: %s\n", qstr_str(pin_af->name));
+        printf("pin_af->af_mode: %d\n", pin_af->af_mode);
+#endif
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("SD not a Pin type"));
     }
-#endif
     
     // is Mode valid?
     uint16_t i2s_mode = args[ARG_mode].u_int;
@@ -995,64 +884,25 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     self->non_blocking_descriptor.copy_in_progress = false;
     self->io_mode = BLOCKING;
 
-#if 0    
-    I2S_InitTypeDef *init = &self->hi2s.Init;
-    init->Mode = i2s_mode;
-    init->Standard = I2S_STANDARD_PHILIPS;
-    init->DataFormat = get_dma_bits(self->mode, self->bits);
-    init->MCLKOutput = I2S_MCLKOUTPUT_DISABLE;
-    init->AudioFreq = args[ARG_rate].u_int;
-    init->CPOL = I2S_CPOL_LOW;
-    init->ClockSource = I2S_CLOCK_PLL;
-    
-#endif
     // init the I2S bus
     if (!i2s_init(self)) {
         mp_raise_msg_varg(&mp_type_OSError, MP_ERROR_TEXT("I2S init failed"));
     }
-    
-#if 0
-    
-    // start DMA.  DMA is configured to run continuously, using a circular buffer configuration
-    uint32_t number_of_samples = 0;
-    if (init->DataFormat == kSAI_WordWidth32bits) {
-        number_of_samples = SIZEOF_DMA_BUFFER_IN_BYTES / sizeof(uint16_t);
-    } else {  // 32 bits
-        number_of_samples = SIZEOF_DMA_BUFFER_IN_BYTES / sizeof(uint32_t);
-    }
-
-    HAL_StatusTypeDef status;
-    if (self->mode == TX) {
-        status = HAL_I2S_Transmit_DMA(&self->hi2s, (void *)self->dma_buffer_dcache_aligned, number_of_samples);
-    } else {  // RX
-        status = HAL_I2S_Receive_DMA(&self->hi2s, (void *)self->dma_buffer_dcache_aligned, number_of_samples);
-    }
-    if (status != HAL_OK) {
-        mp_raise_msg_varg(&mp_type_OSError, MP_ERROR_TEXT("DMA init failed"));
-    }
-#endif
-    
-    
-    
 }
 
 STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
     machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);
     mp_printf(print, "I2S(id=%u,\n"
-#if 0            
-        "sck="MP_HAL_PIN_FMT ",\n"
-        "ws="MP_HAL_PIN_FMT ",\n"
-        "sd="MP_HAL_PIN_FMT ",\n"
-#endif        
+        "sck="MP_HAL_PIN_FMT",\n"
+        "ws="MP_HAL_PIN_FMT",\n"
+        "sd="MP_HAL_PIN_FMT",\n"
         "mode=%u,\n"
         "bits=%u, format=%u,\n"
         "rate=%d, ibuf=%d)",
         self->i2s_id,
-#if 0        
         mp_hal_pin_name(self->sck),
         mp_hal_pin_name(self->ws),
         mp_hal_pin_name(self->sd),
-#endif        
         self->mode,
         self->bits, self->format,
         self->rate, self->ibuf
@@ -1063,26 +913,28 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     mp_arg_check_num(n_pos_args, n_kw_args, 1, MP_OBJ_FUN_ARGS_MAX, true);
 
     uint8_t i2s_id = mp_obj_get_int(args[0]);
-    if (i2s_id < 1 || i2s_id > MICROPY_HW_MAX_I2S) {
-        mp_raise_ValueError(MP_ERROR_TEXT("invalid id"));
+    if (i2s_id < 0 || i2s_id >= MICROPY_HW_I2S_NUM) {
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) doesn't exist"), i2s_id);
     }
 
-    uint8_t i2s_id_zero_base = i2s_id - 1;
     machine_i2s_obj_t *self;
-    if (MP_STATE_PORT(machine_i2s_obj)[i2s_id_zero_base] == NULL) {
+    if (MP_STATE_PORT(machine_i2s_obj)[i2s_id] == NULL) {
         self = m_new_obj(machine_i2s_obj_t);
-        MP_STATE_PORT(machine_i2s_obj)[i2s_id_zero_base] = self;
+        MP_STATE_PORT(machine_i2s_obj)[i2s_id] = self;
         self->base.type = &machine_i2s_type;
         self->i2s_id = i2s_id;
+        uint8_t i2s_hw_id = i2s_index_table[i2s_id];
+        self->i2s_inst = i2s_base_ptr_table[i2s_hw_id];
+        self->i2s_hw_id = i2s_hw_id;
     } else {
-        self = MP_STATE_PORT(machine_i2s_obj)[i2s_id_zero_base];
+        self = MP_STATE_PORT(machine_i2s_obj)[i2s_id];
         machine_i2s_deinit(MP_OBJ_FROM_PTR(self));
     }
 
     // align DMA buffer start to the cache line size (32 bytes)
     self->dma_buffer_dcache_aligned = (uint8_t *)((uint32_t)(self->dma_buffer + 0x1f) & ~0x1f);
 
-    // TODO fill the DMA buffer with NULLs to start?
+    // fill the DMA buffer with NULLs to start
     memset(self->dma_buffer_dcache_aligned, 0, SIZEOF_DMA_BUFFER_IN_BYTES);
 
     mp_map_t kw_args;
@@ -1100,24 +952,12 @@ STATIC mp_obj_t machine_i2s_init(size_t n_pos_args, const mp_obj_t *pos_args, mp
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_init_obj, 1, machine_i2s_init);
 
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
-
     machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);
 
-#if 0
-    dma_deinit(self->dma_descr_tx);
-    dma_deinit(self->dma_descr_rx);
-    HAL_I2S_DeInit(&self->hi2s);
-
-    if (self->hi2s.Instance == I2S1) {
-        __SPI1_FORCE_RESET();
-        __SPI1_RELEASE_RESET();
-        __SPI1_CLK_DISABLE();
-    } else if (self->hi2s.Instance == I2S2) {
-        __SPI2_FORCE_RESET();
-        __SPI2_RELEASE_RESET();
-        __SPI2_CLK_DISABLE();
-    }
-#endif
+    SAI_TxSetChannelFIFOMask(self->i2s_inst, 0U << DEMO_SAI_CHANNEL);
+    SAI_TxEnable(self->i2s_inst, false);
+    SAI_TxEnableDMA(self->i2s_inst, kSAI_FIFORequestDMAEnable, false);
+    SAI_Deinit(self->i2s_inst);
     m_free(self->ring_buffer_storage);
 
     return mp_const_none;
