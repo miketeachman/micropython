@@ -54,17 +54,32 @@
     { IOMUXC_GPIO_AD_B1_07_LPI2C3_SCL }, { IOMUXC_GPIO_AD_B1_06_LPI2C3_SDA }, \
     { IOMUXC_GPIO_AD_B0_12_LPI2C4_SCL }, { IOMUXC_GPIO_AD_B0_13_LPI2C4_SDA },
 
-#define MICROPY_HW_I2S_INDEX   { 1, 2 }
+#define I2S_AF(_hwid, _fn, _mode, _pin, _iomux) \
+    { \
+        .hw_id = _hwid, \
+        .fn = _fn, \
+        .mode = _mode, \
+        .name = MP_QSTR_##_pin, \
+        .iomux = {_iomux}, \
+    }
 
-#define IOMUX_TABLE_I2S \
-    { IOMUXC_GPIO_AD_B1_14_SAI1_TX_BCLK }, { IOMUXC_GPIO_AD_B1_15_SAI1_TX_SYNC },  {IOMUXC_GPIO_AD_B1_13_SAI1_TX_DATA00 }, \
-    { IOMUXC_GPIO_EMC_06_SAI2_TX_BCLK }, { IOMUXC_GPIO_EMC_05_SAI2_TX_SYNC },  {IOMUXC_GPIO_EMC_04_SAI2_TX_DATA },
-
+#define MICROPY_HW_I2S_INDEX { 1, 2 }
 #define I2S_CLOCK_MUX { 0, kCLOCK_Sai1Mux, kCLOCK_Sai2Mux }
 #define I2S_CLOCK_PRE_DIV { 0, kCLOCK_Sai1PreDiv, kCLOCK_Sai2PreDiv }
 #define I2S_CLOCK_DIV { 0, kCLOCK_Sai1Div, kCLOCK_Sai2Div }
 #define I2S_DMA_REQ_SRC_RX { 0, kDmaRequestMuxSai1Rx, kDmaRequestMuxSai2Rx }
 #define I2S_DMA_REQ_SRC_TX { 0, kDmaRequestMuxSai1Tx, kDmaRequestMuxSai2Tx }
+
+#define I2S_AF_MAP \
+    I2S_AF(1, SCK, TX, GPIO_AD_B1_14, IOMUXC_GPIO_AD_B1_14_SAI1_TX_BCLK), \
+    I2S_AF(1, WS, TX, GPIO_AD_B1_15, IOMUXC_GPIO_AD_B1_15_SAI1_TX_SYNC), \
+    I2S_AF(1, SD, TX, GPIO_AD_B1_13, IOMUXC_GPIO_AD_B1_13_SAI1_TX_DATA00), \
+    I2S_AF(1, SCK, TX, GPIO_B1_02, IOMUXC_GPIO_B1_02_SAI1_TX_BCLK), \
+    I2S_AF(1, WS, TX, GPIO_B1_03, IOMUXC_GPIO_B1_03_SAI1_TX_SYNC), \
+    I2S_AF(1, SD, TX, GPIO_B1_01, IOMUXC_GPIO_B1_01_SAI1_TX_DATA00), \
+    I2S_AF(2, SCK, TX, GPIO_EMC_06, IOMUXC_GPIO_EMC_06_SAI2_TX_BCLK), \
+    I2S_AF(2, WS, TX, GPIO_EMC_05, IOMUXC_GPIO_EMC_05_SAI2_TX_SYNC), \
+    I2S_AF(2, SD, TX, GPIO_EMC_04, IOMUXC_GPIO_EMC_04_SAI2_TX_DATA)
 
 #define USDHC_DUMMY_PIN NULL, 0
 #define MICROPY_USDHC1 \

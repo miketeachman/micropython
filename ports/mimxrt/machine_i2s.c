@@ -81,8 +81,7 @@
 // - the DMA controller is configured in Circular mode to fulfil continuous and gapless sample flows
 // - the DMA ping-pong buffer needs to be aligned to a cache line size of 32 bytes.  32 byte
 //   alignment is needed to use the routines that clean and invalidate D-Cache which work on a
-//   32 byte address boundary.  Not all STM32 devices have a D-Cache.  Buffer alignment
-//   will still happen on these devices to keep this code simple.
+//   32 byte address boundary.
 
 // DMA ping-pong buffer size was empirically determined.  It is a tradeoff between:
 // 1. memory use (smaller buffer size desirable to reduce memory footprint)
@@ -98,28 +97,18 @@
 
 #define NUM_I2S_USER_FORMATS (4)
 #define I2S_RX_FRAME_SIZE_IN_BYTES (8)
-
-/* Select Audio/Video PLL (786.48 MHz) as SAI clock source */
+// Select Audio/Video PLL as SAI clock source
 #define SAI_CLOCK_SOURCE_SELECT (2U)
-/* Clock pre divider for SAI clock source */
 #define SAI_CLOCK_SOURCE_PRE_DIVIDER (1U)
-/* Clock divider for SAI clock source */
 #define SAI_CLOCK_SOURCE_DIVIDER (63U)
+#define SAI_CHANNEL_0 (0)
+#define SAI_NUM_AUDIO_CHANNELS (2U)
 
-/* DMA */
-#define DMAMUX0            (DMAMUX)
-#define DEMO_DMA           (DMA0)
-#define DEMO_EDMA_CHANNEL  (0U)
-#define DEMO_SAI_RX_SYNC_MODE kSAI_ModeSync
-#define DEMO_SAI_CHANNEL      (0)
-#define DEMO_AUDIO_DATA_CHANNEL (2U)  // this is the number of channels Stereo = 2
-#define DEMO_AUDIO_MASTER_CLOCK (DEMO_SAI_CLK_FREQ)
-
-/* Get frequency of SAI clock */
-#define DEMO_SAI_CLK_FREQ  \
-    (CLOCK_GetFreq(kCLOCK_AudioPllClk) / (SAI_CLOCK_SOURCE_DIVIDER + 1U) / \
-    (SAI_CLOCK_SOURCE_PRE_DIVIDER + 1U))
-
+typedef enum {
+    SCK,
+    WS,
+    SD
+} i2s_pin_function_t;
 
 typedef enum {
     RX,
@@ -173,9 +162,26 @@ typedef struct _machine_i2s_obj_t {
     uint8_t *ring_buffer_storage;
     non_blocking_descriptor_t non_blocking_descriptor;
     io_mode_t io_mode;
-    I2S_Type *i2s_inst;
     uint8_t i2s_hw_id;
+    I2S_Type *i2s_inst;
 } machine_i2s_obj_t;
+
+// TODO this struct is repeated in other MIMXRT peripherals... put into common H file?
+typedef struct _iomux_table_t {
+    uint32_t muxRegister;
+    uint32_t muxMode;
+    uint32_t inputRegister;
+    uint32_t inputDaisy;
+    uint32_t configRegister;
+} iomux_table_t;
+
+typedef struct _i2s_mapping_t {
+        uint8_t hw_id;
+        i2s_pin_function_t fn;
+        i2s_mode_t mode;  // TODO implement mode, e.g.  TX vs RX
+        qstr name;
+        iomux_table_t iomux;
+} i2s_mapping_t;
 
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in);
 
@@ -189,74 +195,28 @@ STATIC const int8_t i2s_frame_map[NUM_I2S_USER_FORMATS][I2S_RX_FRAME_SIZE_IN_BYT
     { 2,  3,  0,  1,  6,  7,  4,  5 },  // Stereo, 32-bits
 };
 
-// TODO understand and add comments explaining these settings
-const clock_audio_pll_config_t audioPllConfig = {
-    .loopDivider = 32,  /* PLL loop divider. Valid range for DIV_SELECT divider value: 27~54. */
-    .postDivider = 1,   /* Divider after the PLL, should only be 1, 2, 4, 8, 16. */
-    .numerator   = 77,  /* 30 bit numerator of fractional loop divider. */
-    .denominator = 100, /* 30 bit denominator of fractional loop divider */
+// TODO improve comments explaining these settings
+// PLL configuration
+STATIC const clock_audio_pll_config_t audioPllConfig = {
+    .loopDivider = 32,
+    .postDivider = 1,
+    .numerator   = 77,
+    .denominator = 100,
 };
 
-static edma_handle_t g_dmaHandle = {0};
-AT_NONCACHEABLE_SECTION_ALIGN(static edma_tcd_t s_emdaTcd, 32);
-
-static volatile bool s_Transfer_Done        = false;
-static volatile uint32_t s_playIndex        = 0U;
-static volatile uint32_t s_playCount        = 0U;
-static volatile bool s_transferComplete     = false;
-static volatile bool s_transferHalfComplete = false;
-
-
-
-// TODO this struct is repeated in other MIMXRT peripherals... put into common H file?
-typedef struct _iomux_table_t {
-    uint32_t muxRegister;
-    uint32_t muxMode;
-    uint32_t inputRegister;
-    uint32_t inputDaisy;
-    uint32_t configRegister;
-} iomux_table_t;
-
-STATIC const uint8_t i2s_index_table[] = MICROPY_HW_I2S_INDEX;
+STATIC const uint8_t i2s_hw_index_table[] = MICROPY_HW_I2S_INDEX;
 STATIC I2S_Type *i2s_base_ptr_table[] = I2S_BASE_PTRS;
-STATIC const iomux_table_t i2s_iomux_table[] = { IOMUX_TABLE_I2S };
 STATIC const int i2s_clock_mux[] = I2S_CLOCK_MUX;
 STATIC const int i2s_clock_pre_div[] = I2S_CLOCK_PRE_DIV;
 STATIC const int i2s_clock_div[] = I2S_CLOCK_DIV;
 //STATIC uint16_t i2s_dma_req_src_rx[] = I2S_DMA_REQ_SRC_RX;
 STATIC const uint16_t i2s_dma_req_src_tx[] = I2S_DMA_REQ_SRC_TX;
-
-
-#define MICROPY_HW_I2S_NUM ARRAY_SIZE(i2s_index_table)
-
-// TODO is it possible to configure SAI TX such that SAI1_RX_BLK can produce SCK signal?
-// it should be possible
-
-#define SCK (i2s_iomux_table[index])
-#define WS (i2s_iomux_table[index + 1])
-#define SD (i2s_iomux_table[index + 2])
-
-STATIC bool i2s_set_iomux(uint8_t i2s) {
-    uint8_t index = (i2s - 1) * 3;  // TODO fix this ...
-    
-    // TODO fix this --> hiding "index" inside macro should be improved 
-    if (SCK.muxRegister != 0) {
-        IOMUXC_SetPinMux(SCK.muxRegister, SCK.muxMode, SCK.inputRegister, SCK.inputDaisy, SCK.configRegister, 1U);
-        IOMUXC_SetPinConfig(SCK.muxRegister, SCK.muxMode, SCK.inputRegister, SCK.inputDaisy, SCK.configRegister, 0x10B0u);
-
-        IOMUXC_SetPinMux(WS.muxRegister, WS.muxMode, WS.inputRegister, WS.inputDaisy, WS.configRegister, 1U);
-        IOMUXC_SetPinConfig(WS.muxRegister, WS.muxMode, WS.inputRegister, WS.inputDaisy, WS.configRegister, 0x10B0u);
-        
-        IOMUXC_SetPinMux(SD.muxRegister, SD.muxMode, SD.inputRegister, SD.inputDaisy, SD.configRegister, 1U);
-        IOMUXC_SetPinConfig(SD.muxRegister, SD.muxMode, SD.inputRegister, SD.inputDaisy, SD.configRegister, 0x10B0u);
-        return true;
-    } else {
-        return false;
-    }
-}
+STATIC const i2s_mapping_t i2s_mapping_table[] = { I2S_AF_MAP };
+STATIC edma_handle_t edmaHandle = {0};
+AT_NONCACHEABLE_SECTION_ALIGN(STATIC edma_tcd_t emdaTcd, 32);
 
 void machine_i2s_init0() {
-    for (uint8_t i = 0; i < MICROPY_HW_MAX_I2S; i++) {
+    for (uint8_t i = 0; i < MICROPY_HW_NUM_I2S; i++) {
         MP_STATE_PORT(machine_i2s_obj)[i] = NULL;
     }
 }
@@ -342,6 +302,32 @@ STATIC int8_t get_dma_bits(uint16_t mode, int8_t bits) {
         // always read 32 bit words for I2S e.g.  I2S MEMS microphones
         return 32;
     }
+}
+
+// TODO refactor common portions of set_iomux() and is_pin_supported()
+STATIC bool set_iomux(const machine_pin_obj_t *pin, i2s_pin_function_t fn, uint8_t hw_id) {
+    for (uint16_t i=0; i<sizeof(i2s_mapping_table)/sizeof(i2s_mapping_t); i++) {
+        if (pin->name == i2s_mapping_table[i].name) {
+            if ((i2s_mapping_table[i].fn == fn) && (i2s_mapping_table[i].hw_id == hw_id)) {
+                iomux_table_t iom = i2s_mapping_table[i].iomux;
+                IOMUXC_SetPinMux(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 1U);
+                IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 0x10B0u);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+STATIC bool is_pin_supported(machine_pin_obj_t *pin, i2s_pin_function_t fn, uint8_t hw_id) {
+    for (uint16_t i=0; i<sizeof(i2s_mapping_table)/sizeof(i2s_mapping_t); i++) {
+        if (pin->name == i2s_mapping_table[i].name) {
+            if ((i2s_mapping_table[i].fn == fn) && (i2s_mapping_table[i].hw_id == hw_id)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 STATIC uint32_t fill_appbuf_from_ringbuf(machine_i2s_obj_t *self, mp_buffer_info_t *appbuf) {
@@ -544,7 +530,6 @@ STATIC void feed_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
     if (ringbuf_available_data(&self->ring_buffer) >= SIZEOF_HALF_DMA_BUFFER_IN_BYTES) {
 
         // copy a block of samples from the ring buffer to the dma buffer.
-        // STM32 HAL API has a stereo I2S implementation, but not mono
         // mono format is implemented by duplicating each sample into both L and R channels.
         if ((self->format == MONO) && (self->bits == 16)) {
             for (uint32_t i = 0; i < SIZEOF_HALF_DMA_BUFFER_IN_BYTES / 4; i++) {
@@ -565,11 +550,6 @@ STATIC void feed_dma(machine_i2s_obj_t *self, ping_pong_t dma_ping_pong) {
                 ringbuf_pop(&self->ring_buffer, &dma_buffer_p[i]);
             }
         }
-
-        // reformat 32 bit samples to match STM32 HAL API format
-        //if (self->bits == 32) {
-        //    reformat_32_bit_samples((int32_t *)dma_buffer_p, SIZEOF_HALF_DMA_BUFFER_IN_BYTES / (sizeof(uint32_t)));
-        //}
     } else {
         // underflow.  clear buffer to transmit "silence" on the I2S bus
         memset(dma_buffer_p, 0, SIZEOF_HALF_DMA_BUFFER_IN_BYTES);
@@ -619,33 +599,9 @@ void HAL_I2S_RxHalfCpltCallback(I2S_HandleTypeDef *hi2s) {
 }
 #endif
 
-void HAL_I2S_TxCpltCallback(machine_i2s_obj_t *self) {
-    // for non-blocking operation, this IRQ-based callback handles
-    // the write() method requests.
-    if ((self->io_mode == NON_BLOCKING) && (self->non_blocking_descriptor.copy_in_progress)) {
-        copy_appbuf_to_ringbuf_non_blocking(self);
-    }
-
-    // bottom half of buffer now emptied,
-    // safe to fill the bottom half while the top half of buffer is being emptied
-    feed_dma(self, BOTTOM_HALF);
-}
-
-void HAL_I2S_TxHalfCpltCallback(machine_i2s_obj_t *self) {
-    // for non-blocking operation, this IRQ-based callback handles
-    // the write() method requests.
-    if ((self->io_mode == NON_BLOCKING) && (self->non_blocking_descriptor.copy_in_progress)) {
-        copy_appbuf_to_ringbuf_non_blocking(self);
-    }
-
-    // top half of buffer now emptied,
-    // safe to fill the top half while the bottom half of buffer is being emptied
-    feed_dma(self, TOP_HALF);
-}
-
-
+#if 0
 // output ~200us pulse
-void diag_pulse_gpio(uint16_t pin_num) {
+STATIC void diag_pulse_gpio(uint16_t pin_num) {
     const machine_pin_obj_t *pin = machine_pin_board_pins[pin_num];
 
     for (uint32_t i=0; i<10000; i++) {
@@ -654,49 +610,31 @@ void diag_pulse_gpio(uint16_t pin_num) {
 
     mp_hal_pin_low(pin);
 }
+#endif
 
-
-
-    /*! @brief Define callback function for eDMA.
-     *
-     * This callback function is called in the EDMA interrupt handle.
-     * In normal mode, run into callback function means the transfer users need is done.
-     * In scatter gather mode, run into callback function means a transfer control block (tcd) is finished. Not
-     * all transfer finished, users can get the finished tcd numbers using interface EDMA_GetUnusedTCDNumber.
-     *
-     * @param handle EDMA handle pointer, users shall not touch the values inside.
-     * @param userData The callback user parameter pointer. Users can use this parameter to involve things users need to
-     *                 change in EDMA callback function.
-     * @param transferDone If the current loaded transfer done. In normal mode it means if all transfer done. In scatter
-     *                     gather mode, this parameter shows is the current transfer block in EDMA register is done. As the
-     *                     load of core is different, it will be different if the new tcd loaded into EDMA registers while
-     *                     this callback called. If true, it always means new tcd still not loaded into registers, while
-     *                     false means new tcd already loaded into registers.
-     * @param tcds How many tcds are done from the last callback. This parameter only used in scatter gather mode. It
-     *             tells user how many tcds are finished between the last callback and this.
-     */
-    //typedef void (*edma_callback)(struct _edma_handle *handle, void *userData, bool transferDone, uint32_t tcds);
-
-
-/* User callback function for EDMA transfer. */
-void EDMA_TX_Callback(edma_handle_t *handle, void *userData, bool transferDone, uint32_t tcds)
+STATIC void edma_tx_callback(edma_handle_t *handle, void *userData, bool transferDone, uint32_t tcds)
 {
     machine_i2s_obj_t *self = userData;
-    //mp_printf(MP_PYTHON_PRINTER, "i2s_id = %d, transferDone = %d\n", self->i2s_id, transferDone);
 
-    // pulse GPIO pin
-    //diag_pulse_gpio(32);
+    // for non-blocking operation, this IRQ-based callback handles
+    // the write() method requests.
+    if ((self->io_mode == NON_BLOCKING) && (self->non_blocking_descriptor.copy_in_progress)) {
+        copy_appbuf_to_ringbuf_non_blocking(self);
+    }
 
     if (transferDone)
     {
-        HAL_I2S_TxCpltCallback(self);
+        // bottom half of buffer now emptied,
+        // safe to fill the bottom half while the top half of buffer is being emptied
+        feed_dma(self, BOTTOM_HALF);
     }
     else
     {
-        HAL_I2S_TxHalfCpltCallback(self);
+        // top half of buffer now emptied,
+        // safe to fill the top half while the bottom half of buffer is being emptied
+        feed_dma(self, TOP_HALF);
     }
 }
-
 
 STATIC bool i2s_init(machine_i2s_obj_t *self) {
     
@@ -706,62 +644,61 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     CLOCK_SetDiv(i2s_clock_pre_div[self->i2s_hw_id], SAI_CLOCK_SOURCE_PRE_DIVIDER);
     CLOCK_SetDiv(i2s_clock_div[self->i2s_hw_id], SAI_CLOCK_SOURCE_DIVIDER);
 
-    i2s_set_iomux(self->i2s_hw_id);
-    
+    set_iomux(self->sck, SCK, self->i2s_hw_id);
+    set_iomux(self->ws, WS, self->i2s_hw_id);
+    set_iomux(self->sd, SD, self->i2s_hw_id);
+
     int chan = allocate_dma_channel();
-    DMAMUX_Init(DMAMUX0);
+    DMAMUX_Init(DMAMUX);
     // TODO this only covers Tx, need to switch on i2s mode
     DMAMUX_SetSource(DMAMUX, chan, i2s_dma_req_src_tx[self->i2s_hw_id]);
-    DMAMUX_EnableChannel(DMAMUX0, chan);
+    DMAMUX_EnableChannel(DMAMUX, chan);
     
     edma_config_t dmaConfig;
     memset(&dmaConfig, 0, sizeof(dmaConfig));
     EDMA_GetDefaultConfig(&dmaConfig);
     EDMA_Init(DMA0, &dmaConfig);  // TODO SPI has this init as well; will this conflict with SPI operation?
-
-    EDMA_CreateHandle(&g_dmaHandle, DMA0, chan);
-    EDMA_SetCallback(&g_dmaHandle, EDMA_TX_Callback, self);
+    EDMA_CreateHandle(&edmaHandle, DMA0, chan);
+    EDMA_SetCallback(&edmaHandle, edma_tx_callback, self);
     EDMA_ResetChannel(DMA0, chan);
     
     SAI_Init(self->i2s_inst);
     
     sai_transceiver_t saiConfig;
     memset(&saiConfig, 0, sizeof(saiConfig));
-    SAI_GetClassicI2SConfig(&saiConfig, get_dma_bits(self->mode, self->bits), kSAI_Stereo, 1U << DEMO_SAI_CHANNEL);
+    SAI_GetClassicI2SConfig(&saiConfig, get_dma_bits(self->mode, self->bits), kSAI_Stereo, kSAI_Channel0Mask);
     saiConfig.syncMode    = kSAI_ModeAsync;
     saiConfig.masterSlave = kSAI_Master;
-
     SAI_TxSetConfig(self->i2s_inst, &saiConfig);
-    SAI_TxSetBitClockRate(self->i2s_inst, DEMO_AUDIO_MASTER_CLOCK, self->rate, get_dma_bits(self->mode, self->bits),
-                          DEMO_AUDIO_DATA_CHANNEL);
-    
-    MP_HAL_CLEAN_DCACHE(self->dma_buffer_dcache_aligned, SIZEOF_DMA_BUFFER_IN_BYTES);
 
-    uint32_t destAddr = SAI_TxGetDataRegisterAddress(self->i2s_inst, DEMO_SAI_CHANNEL);
+    uint32_t clock_freq =
+            (CLOCK_GetFreq(kCLOCK_AudioPllClk) / (SAI_CLOCK_SOURCE_DIVIDER + 1U) /
+            (SAI_CLOCK_SOURCE_PRE_DIVIDER + 1U));
 
+    SAI_TxSetBitClockRate(self->i2s_inst, clock_freq, self->rate, get_dma_bits(self->mode, self->bits),
+                          SAI_NUM_AUDIO_CHANNELS);
 
     edma_transfer_config_t transferConfig;
     memset(&transferConfig, 0, sizeof(transferConfig));
     uint8_t bytes_per_sample = get_dma_bits(self->mode, self->bits) / 8;
+    uint32_t destAddr = SAI_TxGetDataRegisterAddress(self->i2s_inst, SAI_CHANNEL_0);
     EDMA_PrepareTransfer(&transferConfig,
             self->dma_buffer_dcache_aligned, bytes_per_sample,
             (void *)destAddr, bytes_per_sample,
             (FSL_FEATURE_SAI_FIFO_COUNT - saiConfig.fifo.fifoWatermark) * bytes_per_sample,
             SIZEOF_DMA_BUFFER_IN_BYTES, kEDMA_MemoryToPeripheral);
-    memset(&s_emdaTcd, 0, sizeof(s_emdaTcd));
+    memset(&emdaTcd, 0, sizeof(emdaTcd));
 
-    // use scatter/gather feature, with one TCD linked back to itself.
-    // TODO rename variables such as s_emdaTcd, g_dmaHandle
-    EDMA_TcdSetTransferConfig(&s_emdaTcd, &transferConfig, &s_emdaTcd);
-    EDMA_TcdEnableInterrupts(&s_emdaTcd, kEDMA_MajorInterruptEnable | kEDMA_HalfInterruptEnable);
-    EDMA_InstallTCD(DMA0, chan, &s_emdaTcd);
-    EDMA_StartTransfer(&g_dmaHandle);
+    // continuous DMA operation is acheived using the scatter/gather feature, with one TCD linked back to itself
+    EDMA_TcdSetTransferConfig(&emdaTcd, &transferConfig, &emdaTcd);
+    EDMA_TcdEnableInterrupts(&emdaTcd, kEDMA_MajorInterruptEnable | kEDMA_HalfInterruptEnable);
+    EDMA_InstallTCD(DMA0, chan, &emdaTcd);
+    EDMA_StartTransfer(&edmaHandle);
 
     SAI_TxEnableDMA(self->i2s_inst, kSAI_FIFORequestDMAEnable, true);
     SAI_TxEnable(self->i2s_inst, true);
-    SAI_TxSetChannelFIFOMask(self->i2s_inst, 1U << DEMO_SAI_CHANNEL);
-
-    return true;  // TODO to get it compiling
+    SAI_TxSetChannelFIFOMask(self->i2s_inst, kSAI_Channel0Mask);
+    return true;  // TODO review return codes for API functions used above -- to handle any error conditions
 }
 
 STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -796,44 +733,30 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     //
 
     // are I2S pin assignments valid?
-#if 0
-    const machine_pin_af_obj_t *pin_af;
-#endif
 
-    // TODO support configuration of pins on a per-pin basic (not locked to SAI instance)
+    // is SCK valid?
     if (mp_obj_is_type(args[ARG_sck].u_obj, &machine_pin_type)) {
-#if 0
-        machine_pin_obj_t *pin = args[ARG_sck].u_obj;
-        printf("pin->name: %d\n", pin->name);
-        printf("pin->name qstr: %s\n", qstr_str(pin->name));
-        printf("pin->pin: %ld\n", pin->pin);
-        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_sck].u_obj), PIN_AF_MODE_ALT5);
-        printf("pin_af->name: %d\n", pin_af->name);
-        printf("name: %s\n", qstr_str(pin_af->name));
-        printf("pin_af->af_mode: %d\n", pin_af->af_mode);
-#endif
+        if (!is_pin_supported(args[ARG_sck].u_obj, SCK, self->i2s_hw_id)) {
+            mp_raise_ValueError(MP_ERROR_TEXT("invalid SCK pin"));
+        }
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("SCK not a Pin type"));
     }
 
+    // is WS valid?
     if (mp_obj_is_type(args[ARG_ws].u_obj, &machine_pin_type)) {
-#if 0
-        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_ws].u_obj), PIN_AF_MODE_ALT5);
-        printf("pin_af->name: %d\n", pin_af->name);
-        printf("name: %s\n", qstr_str(pin_af->name));
-        printf("pin_af->af_mode: %d\n", pin_af->af_mode);
-#endif
+        if (!is_pin_supported(args[ARG_ws].u_obj, WS, self->i2s_hw_id)) {
+            mp_raise_ValueError(MP_ERROR_TEXT("invalid WS pin"));
+        }
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("WS not a Pin type"));
     }
 
+    // is SD valid?
     if (mp_obj_is_type(args[ARG_sd].u_obj, &machine_pin_type)) {
-#if 0
-        pin_af = pin_find_af(MP_OBJ_TO_PTR(args[ARG_sd].u_obj), PIN_AF_MODE_ALT5);
-        printf("pin_af->name: %d\n", pin_af->name);
-        printf("name: %s\n", qstr_str(pin_af->name));
-        printf("pin_af->af_mode: %d\n", pin_af->af_mode);
-#endif
+        if (!is_pin_supported(args[ARG_sd].u_obj, SD, self->i2s_hw_id)) {
+            mp_raise_ValueError(MP_ERROR_TEXT("invalid SD pin"));
+        }
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("SD not a Pin type"));
     }
@@ -913,7 +836,7 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     mp_arg_check_num(n_pos_args, n_kw_args, 1, MP_OBJ_FUN_ARGS_MAX, true);
 
     uint8_t i2s_id = mp_obj_get_int(args[0]);
-    if (i2s_id < 0 || i2s_id >= MICROPY_HW_I2S_NUM) {
+    if (i2s_id < 0 || i2s_id >= MICROPY_HW_NUM_I2S) {
         mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) doesn't exist"), i2s_id);
     }
 
@@ -923,7 +846,7 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
         MP_STATE_PORT(machine_i2s_obj)[i2s_id] = self;
         self->base.type = &machine_i2s_type;
         self->i2s_id = i2s_id;
-        uint8_t i2s_hw_id = i2s_index_table[i2s_id];
+        uint8_t i2s_hw_id = i2s_hw_index_table[i2s_id];
         self->i2s_inst = i2s_base_ptr_table[i2s_hw_id];
         self->i2s_hw_id = i2s_hw_id;
     } else {
@@ -954,7 +877,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_init_obj, 1, machine_i2s_init);
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
     machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);
 
-    SAI_TxSetChannelFIFOMask(self->i2s_inst, 0U << DEMO_SAI_CHANNEL);
+    SAI_TxSetChannelFIFOMask(self->i2s_inst, 0);
     SAI_TxEnable(self->i2s_inst, false);
     SAI_TxEnableDMA(self->i2s_inst, kSAI_FIFORequestDMAEnable, false);
     SAI_Deinit(self->i2s_inst);

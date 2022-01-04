@@ -271,14 +271,15 @@ extern const struct _mp_obj_type_t network_lan_type;
 #define MICROPY_HW_PIT_NUM_CHANNELS 3
 
 // TODO should this be wrapped in #if MICROPY_PY_MACHINE_I2S ??
-#define MICROPY_HW_MAX_I2S (2)
+// and/or define in mpconfigboard.h (on a per-board basis)
+#define MICROPY_HW_NUM_I2S (2)
 
 #define MICROPY_PORT_ROOT_POINTERS \
     const char *readline_hist[8]; \
     struct _machine_timer_obj_t *timer_table[MICROPY_HW_PIT_NUM_CHANNELS]; \
     void *machine_pin_irq_objects[MICROPY_HW_NUM_PIN_IRQS]; \
     /* TODO do all imxrt BOARDS support 2 I2S peripherals? */ \
-    struct _machine_i2s_obj_t *machine_i2s_obj[MICROPY_HW_MAX_I2S]; \
+    struct _machine_i2s_obj_t *machine_i2s_obj[MICROPY_HW_NUM_I2S]; \
     /* list of registered NICs */ \
     mp_obj_list_t mod_network_nic_list; \
     /* root pointers for sub-systems */ \
