@@ -97,7 +97,7 @@
 
 #define NUM_I2S_USER_FORMATS (4)
 #define I2S_RX_FRAME_SIZE_IN_BYTES (8)
-#define SAI_CLOCK_SOURCE_SELECT (2U) // Select Audio/Video PLL as SAI clock source
+#define AUDIO_PLL_CLOCK (2U)
 #define SAI_CLOCK_SOURCE_PRE_DIVIDER (1U)
 #define SAI_CLOCK_SOURCE_DIVIDER (63U)
 #define SAI_CHANNEL_0 (0)
@@ -184,6 +184,11 @@ typedef struct _i2s_mapping_t {
         iomux_table_t iomux;
 } i2s_mapping_t;
 
+typedef struct _i2s_pll_rate_t {
+        int32_t rate;
+        const clock_audio_pll_config_t *pll_config;
+} i2s_pll_rate_t;
+
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in);
 
 // The frame map is used with the readinto() method to transform the audio sample data coming
@@ -196,13 +201,38 @@ STATIC const int8_t i2s_frame_map[NUM_I2S_USER_FORMATS][I2S_RX_FRAME_SIZE_IN_BYT
     { 0,  1,  2,  3,  4,  5,  6,  7 },  // Stereo, 32-bits
 };
 
-// TODO improve comments explaining these settings
-// PLL configuration
-STATIC const clock_audio_pll_config_t audioPllConfig = {
-    .loopDivider = 32,
-    .postDivider = 1,
-    .numerator   = 77,
-    .denominator = 100,
+// PLL configurations:
+// Use the built-in 24MHz crystal oscillator as the source
+// The PLLs oscillator frequency range is from 650 MHz to 1300 MHz
+
+// Configuration for frequencies [Hz]:  8000, 12000, 16000, 24000, 32000, 48000
+STATIC const clock_audio_pll_config_t audioPllConfig_8000_48000 = {
+    .loopDivider = 32,          // PLL loop divider. Valid range for DIV_SELECT divider value: 27~54
+    .postDivider = 1,           // Divider after the PLL, should only be 1, 2, 4, 8, 16
+    .numerator = 76802,         // 30 bit numerator of fractional loop divider
+    .denominator = 100000,      // 30 bit denominator of fractional loop divider
+    .src = kCLOCK_PllClkSrc24M  // Pll clock source
+};
+
+// Configuration for frequencies [Hz]:  11025, 22050, 44100
+STATIC const clock_audio_pll_config_t audioPllConfig_11025_44100 = {
+    .loopDivider = 30,          // PLL loop divider. Valid range for DIV_SELECT divider value: 27~54
+    .postDivider = 1,           // Divider after the PLL, should only be 1, 2, 4, 8, 16
+    .numerator = 10562,         // 30 bit numerator of fractional loop divider
+    .denominator = 100000,      // 30 bit denominator of fractional loop divider
+    .src = kCLOCK_PllClkSrc24M  // Pll clock source
+};
+
+STATIC const i2s_pll_rate_t pll_rate_map[] = {
+    {kSAI_SampleRate8KHz, &audioPllConfig_8000_48000},
+    {kSAI_SampleRate11025Hz, &audioPllConfig_11025_44100},
+    {kSAI_SampleRate12KHz, &audioPllConfig_8000_48000},
+    {kSAI_SampleRate16KHz, &audioPllConfig_8000_48000},
+    {kSAI_SampleRate22050Hz, &audioPllConfig_11025_44100},
+    {kSAI_SampleRate24KHz, &audioPllConfig_8000_48000},
+    {kSAI_SampleRate32KHz, &audioPllConfig_8000_48000},
+    {kSAI_SampleRate44100Hz, &audioPllConfig_11025_44100},
+    {kSAI_SampleRate48KHz, &audioPllConfig_8000_48000}
 };
 
 STATIC const uint8_t i2s_hw_index_table[] = MICROPY_HW_I2S_INDEX;
@@ -213,8 +243,7 @@ STATIC const int i2s_clock_div[] = I2S_CLOCK_DIV;
 STATIC const uint16_t i2s_dma_req_src_tx[] = I2S_DMA_REQ_SRC_TX;
 STATIC const uint16_t i2s_dma_req_src_rx[] = I2S_DMA_REQ_SRC_RX;
 STATIC const i2s_mapping_t i2s_mapping_table[] = { I2S_AF_MAP };
-//STATIC edma_handle_t edmaHandle = {0};
-AT_NONCACHEABLE_SECTION_ALIGN(STATIC edma_tcd_t emdaTcd, 32);
+AT_NONCACHEABLE_SECTION_ALIGN(STATIC edma_tcd_t emdaTcd, 32);  // TODO per-instance basis?
 
 void machine_i2s_init0() {
     for (uint8_t i = 0; i < MICROPY_HW_NUM_I2S; i++) {
@@ -333,6 +362,25 @@ STATIC bool is_pin_supported(machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s_
         }
     }
     return false;
+}
+
+bool is_rate_supported(int32_t rate) {
+    for (uint16_t i=0; i<sizeof(pll_rate_map)/sizeof(i2s_pll_rate_t); i++) {
+        if (pll_rate_map[i].rate == rate) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// TODO handle error when not found
+const clock_audio_pll_config_t *get_pll_config(int32_t rate) {
+    for (uint16_t i=0; i<sizeof(pll_rate_map)/sizeof(i2s_pll_rate_t); i++) {
+        if (pll_rate_map[i].rate == rate) {
+            return pll_rate_map[i].pll_config;
+        }
+    }
+    return NULL;
 }
 
 STATIC uint32_t fill_appbuf_from_ringbuf(machine_i2s_obj_t *self, mp_buffer_info_t *appbuf) {
@@ -620,9 +668,8 @@ STATIC void edma_i2s_callback(edma_handle_t *handle, void *userData, bool transf
 
 STATIC bool i2s_init(machine_i2s_obj_t *self) {
     
-    CLOCK_InitAudioPll(&audioPllConfig);
-    
-    CLOCK_SetMux(i2s_clock_mux[self->i2s_hw_id], SAI_CLOCK_SOURCE_SELECT);
+    CLOCK_InitAudioPll(get_pll_config(self->rate));
+    CLOCK_SetMux(i2s_clock_mux[self->i2s_hw_id], AUDIO_PLL_CLOCK);
     CLOCK_SetDiv(i2s_clock_pre_div[self->i2s_hw_id], SAI_CLOCK_SOURCE_PRE_DIVIDER);
     CLOCK_SetDiv(i2s_clock_div[self->i2s_hw_id], SAI_CLOCK_SOURCE_DIVIDER);
 
@@ -665,6 +712,9 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     uint32_t clock_freq =
             (CLOCK_GetFreq(kCLOCK_AudioPllClk) / (SAI_CLOCK_SOURCE_DIVIDER + 1U) /
             (SAI_CLOCK_SOURCE_PRE_DIVIDER + 1U));
+
+    printf("CLOCK_GetFreq(kCLOCK_AudioPllClk):  %ld\n", CLOCK_GetFreq(kCLOCK_AudioPllClk));
+    printf("clock_freq:  %ld\n", clock_freq);
 
     if (self->mode == TX) {
         SAI_TxSetBitClockRate(self->i2s_inst, clock_freq, self->rate, get_dma_bits(self->mode, self->bits),
@@ -797,7 +847,10 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     }
 
     // is Rate valid?
-    // Not checked
+    int32_t i2s_rate = args[ARG_rate].u_int;
+    if (!is_rate_supported(i2s_rate)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid rate"));
+    }
 
     // is Ibuf valid?
     int32_t ring_buffer_len = args[ARG_ibuf].u_int;
@@ -815,7 +868,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     self->mode = i2s_mode;
     self->bits = i2s_bits;
     self->format = i2s_format;
-    self->rate = args[ARG_rate].u_int;
+    self->rate = i2s_rate;
     self->ibuf = ring_buffer_len;
     self->callback_for_non_blocking = MP_OBJ_NULL;
     self->non_blocking_descriptor.copy_in_progress = false;
