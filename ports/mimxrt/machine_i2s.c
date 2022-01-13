@@ -44,6 +44,8 @@
 #include "fsl_iomuxc.h"
 #include "fsl_sai_edma.h"
 
+// TODO review all comments
+
 #if MICROPY_PY_MACHINE_I2S
 // The I2S module has 3 modes of operation:
 //
@@ -149,7 +151,7 @@ typedef struct _machine_i2s_obj_t {
     mp_hal_pin_obj_t sck;
     mp_hal_pin_obj_t ws;
     mp_hal_pin_obj_t sd;
-    uint16_t mode;  // TODO check type  i2s_mode_t ?  could it just be mode_t ?
+    i2s_mode_t mode;
     int8_t bits;
     format_t format;
     int32_t rate;
@@ -161,7 +163,6 @@ typedef struct _machine_i2s_obj_t {
     uint8_t *ring_buffer_storage;
     non_blocking_descriptor_t non_blocking_descriptor;
     io_mode_t io_mode;
-    uint8_t i2s_hw_id;
     I2S_Type *i2s_inst;
     int dma_channel;
     edma_handle_t edmaHandle;
@@ -201,11 +202,9 @@ STATIC const int8_t i2s_frame_map[NUM_I2S_USER_FORMATS][I2S_RX_FRAME_SIZE_IN_BYT
     { 0,  1,  2,  3,  4,  5,  6,  7 },  // Stereo, 32-bits
 };
 
-// PLL configurations:
-// Use the built-in 24MHz crystal oscillator as the source
-// The PLLs oscillator frequency range is from 650 MHz to 1300 MHz
+// 2 PLL configurations:
 
-// Configuration for frequencies [Hz]:  8000, 12000, 16000, 24000, 32000, 48000
+// Configuration 1: for sampling frequencies [Hz]:  8000, 12000, 16000, 24000, 32000, 48000
 STATIC const clock_audio_pll_config_t audioPllConfig_8000_48000 = {
     .loopDivider = 32,          // PLL loop divider. Valid range for DIV_SELECT divider value: 27~54
     .postDivider = 1,           // Divider after the PLL, should only be 1, 2, 4, 8, 16
@@ -214,7 +213,7 @@ STATIC const clock_audio_pll_config_t audioPllConfig_8000_48000 = {
     .src = kCLOCK_PllClkSrc24M  // Pll clock source
 };
 
-// Configuration for frequencies [Hz]:  11025, 22050, 44100
+// Configuration 2: for sampling frequencies [Hz]:  11025, 22050, 44100
 STATIC const clock_audio_pll_config_t audioPllConfig_11025_44100 = {
     .loopDivider = 30,          // PLL loop divider. Valid range for DIV_SELECT divider value: 27~54
     .postDivider = 1,           // Divider after the PLL, should only be 1, 2, 4, 8, 16
@@ -235,7 +234,6 @@ STATIC const i2s_pll_rate_t pll_rate_map[] = {
     {kSAI_SampleRate48KHz, &audioPllConfig_8000_48000}
 };
 
-STATIC const uint8_t i2s_hw_index_table[] = MICROPY_HW_I2S_INDEX;
 STATIC I2S_Type *i2s_base_ptr_table[] = I2S_BASE_PTRS;
 STATIC const int i2s_clock_mux[] = I2S_CLOCK_MUX;
 STATIC const int i2s_clock_pre_div[] = I2S_CLOCK_PRE_DIV;
@@ -243,7 +241,7 @@ STATIC const int i2s_clock_div[] = I2S_CLOCK_DIV;
 STATIC const uint16_t i2s_dma_req_src_tx[] = I2S_DMA_REQ_SRC_TX;
 STATIC const uint16_t i2s_dma_req_src_rx[] = I2S_DMA_REQ_SRC_RX;
 STATIC const i2s_mapping_t i2s_mapping_table[] = { I2S_AF_MAP };
-AT_NONCACHEABLE_SECTION_ALIGN(STATIC edma_tcd_t emdaTcd, 32);  // TODO per-instance basis?
+AT_NONCACHEABLE_SECTION_ALIGN(STATIC edma_tcd_t emdaTcd[MICROPY_HW_NUM_I2S], 32);
 
 void machine_i2s_init0() {
     for (uint8_t i = 0; i < MICROPY_HW_NUM_I2S; i++) {
@@ -334,37 +332,34 @@ STATIC int8_t get_dma_bits(uint16_t mode, int8_t bits) {
     }
 }
 
-// TODO refactor common portions of set_iomux() and is_pin_supported()
+// TODO consider better naming for lookup_pin
+STATIC bool lookup_pin(uint16_t *index, const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s_mode_t mode, uint8_t hw_id) {
+    for (uint16_t i=0; i<sizeof(i2s_mapping_table)/sizeof(i2s_mapping_t); i++) {
+        if ((pin->name == i2s_mapping_table[i].name) &&
+            (i2s_mapping_table[i].fn == fn) &&
+            (i2s_mapping_table[i].hw_id == hw_id) &&
+            (i2s_mapping_table[i].mode == mode)) {
+            *index = i;
+            return true;
+        }
+    }
+    return false;
+}
+
 STATIC bool set_iomux(const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s_mode_t mode, uint8_t hw_id) {
-    for (uint16_t i=0; i<sizeof(i2s_mapping_table)/sizeof(i2s_mapping_t); i++) {
-        if (pin->name == i2s_mapping_table[i].name) {
-            if ((i2s_mapping_table[i].fn == fn) &&
-                (i2s_mapping_table[i].hw_id == hw_id) &&
-                (i2s_mapping_table[i].mode == mode)) {
-                iomux_table_t iom = i2s_mapping_table[i].iomux;
-                IOMUXC_SetPinMux(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 1U);
-                IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 0x10B0u);
-                return true;
-            }
-        }
+    uint16_t mapping_index;
+    if (lookup_pin(&mapping_index, pin, fn, mode, hw_id)) {
+        iomux_table_t iom = i2s_mapping_table[mapping_index].iomux;
+        IOMUXC_SetPinMux(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 1U);
+        IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 0x10B0u);
+        return true;
     }
-    return false;
+    else {
+        return false;
+    }
 }
 
-STATIC bool is_pin_supported(machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s_mode_t mode, uint8_t hw_id) {
-    for (uint16_t i=0; i<sizeof(i2s_mapping_table)/sizeof(i2s_mapping_t); i++) {
-        if (pin->name == i2s_mapping_table[i].name) {
-            if ((i2s_mapping_table[i].fn == fn) &&
-                (i2s_mapping_table[i].hw_id == hw_id) &&
-                (i2s_mapping_table[i].mode == mode)) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-bool is_rate_supported(int32_t rate) {
+STATIC bool is_rate_supported(int32_t rate) {
     for (uint16_t i=0; i<sizeof(pll_rate_map)/sizeof(i2s_pll_rate_t); i++) {
         if (pll_rate_map[i].rate == rate) {
             return true;
@@ -373,8 +368,7 @@ bool is_rate_supported(int32_t rate) {
     return false;
 }
 
-// TODO handle error when not found
-const clock_audio_pll_config_t *get_pll_config(int32_t rate) {
+STATIC const clock_audio_pll_config_t *get_pll_config(int32_t rate) {
     for (uint16_t i=0; i<sizeof(pll_rate_map)/sizeof(i2s_pll_rate_t); i++) {
         if (pll_rate_map[i].rate == rate) {
             return pll_rate_map[i].pll_config;
@@ -669,21 +663,29 @@ STATIC void edma_i2s_callback(edma_handle_t *handle, void *userData, bool transf
 STATIC bool i2s_init(machine_i2s_obj_t *self) {
     
     CLOCK_InitAudioPll(get_pll_config(self->rate));
-    CLOCK_SetMux(i2s_clock_mux[self->i2s_hw_id], AUDIO_PLL_CLOCK);
-    CLOCK_SetDiv(i2s_clock_pre_div[self->i2s_hw_id], SAI_CLOCK_SOURCE_PRE_DIVIDER);
-    CLOCK_SetDiv(i2s_clock_div[self->i2s_hw_id], SAI_CLOCK_SOURCE_DIVIDER);
+    CLOCK_SetMux(i2s_clock_mux[self->i2s_id], AUDIO_PLL_CLOCK);
+    CLOCK_SetDiv(i2s_clock_pre_div[self->i2s_id], SAI_CLOCK_SOURCE_PRE_DIVIDER);
+    CLOCK_SetDiv(i2s_clock_div[self->i2s_id], SAI_CLOCK_SOURCE_DIVIDER);
 
-    set_iomux(self->sck, SCK, self->mode, self->i2s_hw_id);
-    set_iomux(self->ws, WS, self->mode, self->i2s_hw_id);
-    set_iomux(self->sd, SD, self->mode, self->i2s_hw_id);
+    if (!set_iomux(self->sck, SCK, self->mode, self->i2s_id)) {
+        return false;
+    }
+
+    if (!set_iomux(self->ws, WS, self->mode, self->i2s_id)) {
+        return false;
+    }
+
+    if(!set_iomux(self->sd, SD, self->mode, self->i2s_id)) {
+        return false;
+    }
 
     self->dma_channel = allocate_dma_channel();
 
     DMAMUX_Init(DMAMUX);
     if (self->mode == TX) {
-        DMAMUX_SetSource(DMAMUX, self->dma_channel, i2s_dma_req_src_tx[self->i2s_hw_id]);
+        DMAMUX_SetSource(DMAMUX, self->dma_channel, i2s_dma_req_src_tx[self->i2s_id]);
     } else { // RX
-        DMAMUX_SetSource(DMAMUX, self->dma_channel, i2s_dma_req_src_rx[self->i2s_hw_id]);
+        DMAMUX_SetSource(DMAMUX, self->dma_channel, i2s_dma_req_src_rx[self->i2s_id]);
     }
     DMAMUX_EnableChannel(DMAMUX, self->dma_channel);
     
@@ -713,9 +715,6 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
             (CLOCK_GetFreq(kCLOCK_AudioPllClk) / (SAI_CLOCK_SOURCE_DIVIDER + 1U) /
             (SAI_CLOCK_SOURCE_PRE_DIVIDER + 1U));
 
-    printf("CLOCK_GetFreq(kCLOCK_AudioPllClk):  %ld\n", CLOCK_GetFreq(kCLOCK_AudioPllClk));
-    printf("clock_freq:  %ld\n", clock_freq);
-
     if (self->mode == TX) {
         SAI_TxSetBitClockRate(self->i2s_inst, clock_freq, self->rate, get_dma_bits(self->mode, self->bits),
                               SAI_NUM_AUDIO_CHANNELS);
@@ -744,12 +743,12 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
                 SIZEOF_DMA_BUFFER_IN_BYTES, kEDMA_PeripheralToMemory);
     }
 
-    memset(&emdaTcd, 0, sizeof(emdaTcd));
+    memset(&emdaTcd[self->i2s_id], 0, sizeof(emdaTcd));
 
     // continuous DMA operation is acheived using the scatter/gather feature, with one TCD linked back to itself
-    EDMA_TcdSetTransferConfig(&emdaTcd, &transferConfig, &emdaTcd);
-    EDMA_TcdEnableInterrupts(&emdaTcd, kEDMA_MajorInterruptEnable | kEDMA_HalfInterruptEnable);
-    EDMA_InstallTCD(DMA0, self->dma_channel, &emdaTcd);
+    EDMA_TcdSetTransferConfig(&emdaTcd[self->i2s_id], &transferConfig, &emdaTcd[self->i2s_id]);
+    EDMA_TcdEnableInterrupts(&emdaTcd[self->i2s_id], kEDMA_MajorInterruptEnable | kEDMA_HalfInterruptEnable);
+    EDMA_InstallTCD(DMA0, self->dma_channel, &emdaTcd[self->i2s_id]);
     EDMA_StartTransfer(&self->edmaHandle);
 
     if (self->mode == TX) {
@@ -762,7 +761,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
         SAI_RxSetChannelFIFOMask(self->i2s_inst, kSAI_Channel0Mask);
     }
 
-    return true;  // TODO review return codes for API functions used above -- to handle any error conditions
+    return true;
 }
 
 STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -797,10 +796,11 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     //
 
     // are I2S pin assignments valid?
+    uint16_t not_used;
 
     // is SCK valid?
     if (mp_obj_is_type(args[ARG_sck].u_obj, &machine_pin_type)) {
-        if (!is_pin_supported(args[ARG_sck].u_obj, SCK, args[ARG_mode].u_int, self->i2s_hw_id)) {
+        if (!lookup_pin(&not_used, args[ARG_sck].u_obj, SCK, args[ARG_mode].u_int, self->i2s_id)) {
             mp_raise_ValueError(MP_ERROR_TEXT("invalid SCK pin"));
         }
     } else {
@@ -809,7 +809,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     // is WS valid?
     if (mp_obj_is_type(args[ARG_ws].u_obj, &machine_pin_type)) {
-        if (!is_pin_supported(args[ARG_ws].u_obj, WS, args[ARG_mode].u_int, self->i2s_hw_id)) {
+        if (!lookup_pin(&not_used, args[ARG_ws].u_obj, WS, args[ARG_mode].u_int, self->i2s_id)) {
             mp_raise_ValueError(MP_ERROR_TEXT("invalid WS pin"));
         }
     } else {
@@ -818,7 +818,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     // is SD valid?
     if (mp_obj_is_type(args[ARG_sd].u_obj, &machine_pin_type)) {
-        if (!is_pin_supported(args[ARG_sd].u_obj, SD, args[ARG_mode].u_int, self->i2s_hw_id)) {
+        if (!lookup_pin(&not_used, args[ARG_sd].u_obj, SD, args[ARG_mode].u_int, self->i2s_id)) {
             mp_raise_ValueError(MP_ERROR_TEXT("invalid SD pin"));
         }
     } else {
@@ -873,6 +873,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     self->callback_for_non_blocking = MP_OBJ_NULL;
     self->non_blocking_descriptor.copy_in_progress = false;
     self->io_mode = BLOCKING;
+    self->i2s_inst = i2s_base_ptr_table[self->i2s_id];
 
     // init the I2S bus
     if (!i2s_init(self)) {
@@ -901,21 +902,20 @@ STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
 
 STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_args, size_t n_kw_args, const mp_obj_t *args) {
     mp_arg_check_num(n_pos_args, n_kw_args, 1, MP_OBJ_FUN_ARGS_MAX, true);
-
     uint8_t i2s_id = mp_obj_get_int(args[0]);
-    if (i2s_id < 0 || i2s_id >= MICROPY_HW_NUM_I2S) {
+
+    if (i2s_id < 1 || i2s_id > MICROPY_HW_NUM_I2S) {
         mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) doesn't exist"), i2s_id);
     }
 
+    uint8_t i2s_id_zero_base = i2s_id - 1;
+
     machine_i2s_obj_t *self;
-    if (MP_STATE_PORT(machine_i2s_obj)[i2s_id] == NULL) {
+    if (MP_STATE_PORT(machine_i2s_obj)[i2s_id_zero_base] == NULL) {
         self = m_new_obj(machine_i2s_obj_t);
-        MP_STATE_PORT(machine_i2s_obj)[i2s_id] = self;
+        MP_STATE_PORT(machine_i2s_obj)[i2s_id_zero_base] = self;
         self->base.type = &machine_i2s_type;
         self->i2s_id = i2s_id;
-        uint8_t i2s_hw_id = i2s_hw_index_table[i2s_id];
-        self->i2s_inst = i2s_base_ptr_table[i2s_hw_id];
-        self->i2s_hw_id = i2s_hw_id;
     } else {
         self = MP_STATE_PORT(machine_i2s_obj)[i2s_id];
         machine_i2s_deinit(MP_OBJ_FROM_PTR(self));
@@ -944,21 +944,27 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_i2s_init_obj, 1, machine_i2s_init);
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
     machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);
 
-    if (self->mode == TX) {
-        SAI_TxSetChannelFIFOMask(self->i2s_inst, 0);
-        SAI_TxEnable(self->i2s_inst, false);
-        SAI_TxEnableDMA(self->i2s_inst, kSAI_FIFORequestDMAEnable, false);
-    } else { // RX
-        SAI_RxSetChannelFIFOMask(self->i2s_inst, 0);
-        SAI_RxEnable(self->i2s_inst, false);
-        SAI_RxEnableDMA(self->i2s_inst, kSAI_FIFORequestDMAEnable, false);
+    // use self->i2s_inst as in indication that I2S object has already been de-initialized
+    if (self->i2s_inst != NULL) {
+        EDMA_AbortTransfer(&self->edmaHandle);
+
+        if (self->mode == TX) {
+            SAI_TxSetChannelFIFOMask(self->i2s_inst, 0);
+            SAI_TxEnableDMA(self->i2s_inst, kSAI_FIFORequestDMAEnable, false);
+            SAI_TxEnable(self->i2s_inst, false);
+            SAI_TxReset(self->i2s_inst);
+        } else { // RX
+            SAI_RxSetChannelFIFOMask(self->i2s_inst, 0);
+            SAI_RxEnableDMA(self->i2s_inst, kSAI_FIFORequestDMAEnable, false);
+            SAI_RxEnable(self->i2s_inst, false);
+            SAI_RxReset(self->i2s_inst);
+        }
+
+        SAI_Deinit(self->i2s_inst);
+        free_dma_channel(self->dma_channel);
+        m_free(self->ring_buffer_storage);
+        self->i2s_inst = NULL;  // flag object as de-initialized
     }
-
-    //  TODO see if SAI_TransferAbortSendEDMA() should be used somewhere in deinit();
-    SAI_Deinit(self->i2s_inst);
-    free_dma_channel(self->dma_channel);
-    m_free(self->ring_buffer_storage);
-
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_i2s_deinit_obj, machine_i2s_deinit);

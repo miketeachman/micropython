@@ -63,7 +63,6 @@
         .iomux = {_iomux}, \
     }
 
-#define MICROPY_HW_I2S_INDEX { 1, 2 }
 #define I2S_CLOCK_MUX { 0, kCLOCK_Sai1Mux, kCLOCK_Sai2Mux }
 #define I2S_CLOCK_PRE_DIV { 0, kCLOCK_Sai1PreDiv, kCLOCK_Sai2PreDiv }
 #define I2S_CLOCK_DIV { 0, kCLOCK_Sai1Div, kCLOCK_Sai2Div }
