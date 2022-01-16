@@ -40,9 +40,10 @@
 #include "dma_channel.h"
 
 #include "clock_config.h"
-#include "fsl_dmamux.h"
 #include "fsl_iomuxc.h"
-#include "fsl_sai_edma.h"
+#include "fsl_dmamux.h"
+#include "fsl_edma.h"
+#include "fsl_sai.h"
 
 // TODO review all comments
 
@@ -166,6 +167,7 @@ typedef struct _machine_i2s_obj_t {
     I2S_Type *i2s_inst;
     int dma_channel;
     edma_handle_t edmaHandle;
+    edma_tcd_t *edmaTcd;
 } machine_i2s_obj_t;
 
 // TODO this struct is repeated in other MIMXRT peripherals... put into common H file?
@@ -241,10 +243,10 @@ STATIC const int i2s_clock_div[] = I2S_CLOCK_DIV;
 STATIC const uint16_t i2s_dma_req_src_tx[] = I2S_DMA_REQ_SRC_TX;
 STATIC const uint16_t i2s_dma_req_src_rx[] = I2S_DMA_REQ_SRC_RX;
 STATIC const i2s_mapping_t i2s_mapping_table[] = { I2S_AF_MAP };
-AT_NONCACHEABLE_SECTION_ALIGN(STATIC edma_tcd_t emdaTcd[MICROPY_HW_NUM_I2S], 32);
+AT_NONCACHEABLE_SECTION_ALIGN(STATIC edma_tcd_t edmaTcd[MICROPY_HW_I2S_NUM], 32);
 
 void machine_i2s_init0() {
-    for (uint8_t i = 0; i < MICROPY_HW_NUM_I2S; i++) {
+    for (uint8_t i = 0; i < MICROPY_HW_I2S_NUM; i++) {
         MP_STATE_PORT(machine_i2s_obj)[i] = NULL;
     }
 }
@@ -743,12 +745,12 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
                 SIZEOF_DMA_BUFFER_IN_BYTES, kEDMA_PeripheralToMemory);
     }
 
-    memset(&emdaTcd[self->i2s_id], 0, sizeof(emdaTcd));
+    memset(self->edmaTcd, 0, sizeof(edma_tcd_t));
 
     // continuous DMA operation is acheived using the scatter/gather feature, with one TCD linked back to itself
-    EDMA_TcdSetTransferConfig(&emdaTcd[self->i2s_id], &transferConfig, &emdaTcd[self->i2s_id]);
-    EDMA_TcdEnableInterrupts(&emdaTcd[self->i2s_id], kEDMA_MajorInterruptEnable | kEDMA_HalfInterruptEnable);
-    EDMA_InstallTCD(DMA0, self->dma_channel, &emdaTcd[self->i2s_id]);
+    EDMA_TcdSetTransferConfig(self->edmaTcd, &transferConfig, self->edmaTcd);
+    EDMA_TcdEnableInterrupts(self->edmaTcd, kEDMA_MajorInterruptEnable | kEDMA_HalfInterruptEnable);
+    EDMA_InstallTCD(DMA0, self->dma_channel, self->edmaTcd);
     EDMA_StartTransfer(&self->edmaHandle);
 
     if (self->mode == TX) {
@@ -904,7 +906,7 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     mp_arg_check_num(n_pos_args, n_kw_args, 1, MP_OBJ_FUN_ARGS_MAX, true);
     uint8_t i2s_id = mp_obj_get_int(args[0]);
 
-    if (i2s_id < 1 || i2s_id > MICROPY_HW_NUM_I2S) {
+    if (i2s_id < 1 || i2s_id > MICROPY_HW_I2S_NUM) {
         mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) doesn't exist"), i2s_id);
     }
 
@@ -916,6 +918,7 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
         MP_STATE_PORT(machine_i2s_obj)[i2s_id_zero_base] = self;
         self->base.type = &machine_i2s_type;
         self->i2s_id = i2s_id;
+        self->edmaTcd =  &edmaTcd[i2s_id_zero_base];
     } else {
         self = MP_STATE_PORT(machine_i2s_obj)[i2s_id];
         machine_i2s_deinit(MP_OBJ_FROM_PTR(self));
