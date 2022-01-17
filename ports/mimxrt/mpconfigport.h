@@ -284,7 +284,7 @@ extern const struct _mp_obj_type_t network_lan_type;
     mp_obj_list_t mod_network_nic_list; \
     /* root pointers for sub-systems */ \
     MICROPY_PORT_ROOT_POINTER_MBEDTLS \
-    MICROPY_BOARD_ROOT_POINTERS \
+        MICROPY_BOARD_ROOT_POINTERS \
 
 #define MP_STATE_PORT MP_STATE_VM
 
