@@ -38,6 +38,7 @@
 #include "py/objstr.h"
 #include "modmachine.h"
 #include "dma_channel.h"
+#include "dma.h"
 
 #include "clock_config.h"
 #include "fsl_iomuxc.h"
@@ -167,7 +168,6 @@ typedef struct _machine_i2s_obj_t {
     edma_tcd_t *edmaTcd;
 } machine_i2s_obj_t;
 
-// TODO this struct is repeated in other MIMXRT peripherals... put into common H file?
 typedef struct _iomux_table_t {
     uint32_t muxRegister;
     uint32_t muxMode;
@@ -664,10 +664,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     }
     DMAMUX_EnableChannel(DMAMUX, self->dma_channel);
 
-    edma_config_t dmaConfig;
-    memset(&dmaConfig, 0, sizeof(dmaConfig));
-    EDMA_GetDefaultConfig(&dmaConfig);
-    EDMA_Init(DMA0, &dmaConfig);  // TODO SPI has this init as well; will this conflict with SPI operation?
+    dma_init();
     EDMA_CreateHandle(&self->edmaHandle, DMA0, self->dma_channel);
     EDMA_SetCallback(&self->edmaHandle, edma_i2s_callback, self);
     EDMA_ResetChannel(DMA0, self->dma_channel);
@@ -675,7 +672,6 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     SAI_Init(self->i2s_inst);
 
     sai_transceiver_t saiConfig;
-    memset(&saiConfig, 0, sizeof(saiConfig));
     SAI_GetClassicI2SConfig(&saiConfig, get_dma_bits(self->mode, self->bits), kSAI_Stereo, kSAI_Channel0Mask);
     saiConfig.syncMode = kSAI_ModeAsync;
     saiConfig.masterSlave = kSAI_Master;
@@ -699,7 +695,6 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     }
 
     edma_transfer_config_t transferConfig;
-    memset(&transferConfig, 0, sizeof(transferConfig));
     uint8_t bytes_per_sample = get_dma_bits(self->mode, self->bits) / 8;
 
     if (self->mode == TX) {
