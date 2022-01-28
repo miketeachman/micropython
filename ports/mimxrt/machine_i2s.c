@@ -112,7 +112,8 @@ typedef enum {
 
 typedef enum {
     RX,
-    TX
+    TX,
+    MCK
 } i2s_mode_t;
 
 typedef enum {

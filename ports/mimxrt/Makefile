@@ -77,7 +77,7 @@ INC += -I$(TOP)/lib/tinyusb/hw
 INC += -I$(TOP)/lib/tinyusb/hw/bsp/teensy_40
 INC += -I$(TOP)/lib/tinyusb/src
 
-CFLAGS_MCU = -mtune=cortex-m7 -mcpu=cortex-m7 -mfloat-abi=hard -mfpu=fpv5-d16
+CFLAGS_MCU = -mtune=cortex-m7 -mcpu=cortex-m7
 CFLAGS += $(INC) -Wall -Werror -Wdouble-promotion -Wfloat-conversion -std=c99 -nostdlib -mthumb $(CFLAGS_MCU)
 CFLAGS += -DCPU_$(MCU_SERIES) -DCPU_$(MCU_VARIANT) -DBOARD_$(BOARD)
 CFLAGS += -DXIP_EXTERNAL_FLASH=1 \
@@ -100,12 +100,14 @@ CFLAGS += $(CFLAGS_MOD) $(CFLAGS_EXTRA)
 # Configure floating point support
 ifeq ($(MICROPY_FLOAT_IMPL),double)
 CFLAGS += -DMICROPY_FLOAT_IMPL=MICROPY_FLOAT_IMPL_DOUBLE
+CFLAGS_MPU += -mfloat-abi=hard  -mfpu=fpv5-d16
 else
 ifeq ($(MICROPY_FLOAT_IMPL),none)
 CFLAGS += -DMICROPY_FLOAT_IMPL=MICROPY_FLOAT_IMPL_NONE
 else
 CFLAGS += -DMICROPY_FLOAT_IMPL=MICROPY_FLOAT_IMPL_FLOAT
 CFLAGS += -fsingle-precision-constant
+CFLAGS_MPU += -mfloat-abi=softfp -mfpu=fpv5-sp-d16
 endif
 endif
 
