@@ -99,7 +99,7 @@
 #define NUM_I2S_USER_FORMATS (4)
 #define I2S_RX_FRAME_SIZE_IN_BYTES (8)
 #define AUDIO_PLL_CLOCK (2U)
-#define SAI_CLOCK_SOURCE_PRE_DIVIDER (1U)
+#define SAI_CLOCK_SOURCE_PRE_DIVIDER (0U)
 #define SAI_CLOCK_SOURCE_DIVIDER (63U)
 #define SAI_CHANNEL_0 (0)
 #define SAI_NUM_AUDIO_CHANNELS (2U)
@@ -107,13 +107,13 @@
 typedef enum {
     SCK,
     WS,
-    SD
+    SD,
+    MCK
 } i2s_pin_function_t;
 
 typedef enum {
     RX,
-    TX,
-    MCK
+    TX
 } i2s_mode_t;
 
 typedef enum {
@@ -151,6 +151,7 @@ typedef struct _machine_i2s_obj_t {
     mp_hal_pin_obj_t sck;
     mp_hal_pin_obj_t ws;
     mp_hal_pin_obj_t sd;
+    mp_hal_pin_obj_t mck;
     i2s_mode_t mode;
     int8_t bits;
     format_t format;
@@ -337,7 +338,7 @@ STATIC bool lookup_gpio(const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s
         if ((pin->name == i2s_gpio_map[i].name) &&
             (i2s_gpio_map[i].fn == fn) &&
             (i2s_gpio_map[i].hw_id == hw_id) &&
-            (i2s_gpio_map[i].mode == mode)) {
+            (fn == (i2s_pin_function_t)MCK || (i2s_gpio_map[i].mode == mode))) {
             *index = i;
             return true;
         }
@@ -655,6 +656,12 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
         return false;
     }
 
+    if (self->mck && !set_iomux(self->mck, MCK, self->mode, self->i2s_id)) {
+        return false;
+    } else {
+        IOMUXC_GPR->GPR1 |= IOMUXC_GPR_GPR1_SAI1_MCLK_DIR_MASK;
+    }
+
     self->dma_channel = allocate_dma_channel();
 
     DMAMUX_Init(DMAMUX);
@@ -746,6 +753,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         ARG_format,
         ARG_rate,
         ARG_ibuf,
+        ARG_mck,
     };
 
     static const mp_arg_t allowed_args[] = {
@@ -757,6 +765,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         { MP_QSTR_format,   MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_rate,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_ibuf,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
+        { MP_QSTR_mck,      MP_ARG_KW_ONLY | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
     };
 
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -768,6 +777,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     // are I2S pin assignments valid?
     uint16_t not_used;
+    bool mck_used = false;
 
     // is SCK valid?
     if (mp_obj_is_type(args[ARG_sck].u_obj, &machine_pin_type)) {
@@ -794,6 +804,14 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         }
     } else {
         mp_raise_ValueError(MP_ERROR_TEXT("SD not a Pin type"));
+    }
+
+    // is MCK present and valid?
+    if (mp_obj_is_type(args[ARG_mck].u_obj, &machine_pin_type)) {
+        if (!lookup_gpio(args[ARG_mck].u_obj, MCK, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
+            mp_raise_ValueError(MP_ERROR_TEXT("invalid MCK pin"));
+        }
+        mck_used = true;
     }
 
     // is Mode valid?
@@ -836,6 +854,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     self->sck = MP_OBJ_TO_PTR(args[ARG_sck].u_obj);
     self->ws = MP_OBJ_TO_PTR(args[ARG_ws].u_obj);
     self->sd = MP_OBJ_TO_PTR(args[ARG_sd].u_obj);
+    self->mck = mck_used ? MP_OBJ_TO_PTR(args[ARG_mck].u_obj) : NULL;
     self->mode = i2s_mode;
     self->bits = i2s_bits;
     self->format = i2s_format;

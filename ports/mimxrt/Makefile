@@ -100,14 +100,14 @@ CFLAGS += $(CFLAGS_MOD) $(CFLAGS_EXTRA)
 # Configure floating point support
 ifeq ($(MICROPY_FLOAT_IMPL),double)
 CFLAGS += -DMICROPY_FLOAT_IMPL=MICROPY_FLOAT_IMPL_DOUBLE
-CFLAGS_MPU += -mfloat-abi=hard  -mfpu=fpv5-d16
+CFLAGS_MCU += -mfloat-abi=hard  -mfpu=fpv5-d16
 else
 ifeq ($(MICROPY_FLOAT_IMPL),none)
 CFLAGS += -DMICROPY_FLOAT_IMPL=MICROPY_FLOAT_IMPL_NONE
 else
 CFLAGS += -DMICROPY_FLOAT_IMPL=MICROPY_FLOAT_IMPL_FLOAT
 CFLAGS += -fsingle-precision-constant
-CFLAGS_MPU += -mfloat-abi=softfp -mfpu=fpv5-sp-d16
+CFLAGS_MCU += -mfloat-abi=softfp -mfpu=fpv5-sp-d16
 endif
 endif
 
