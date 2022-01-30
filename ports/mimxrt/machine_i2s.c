@@ -765,41 +765,32 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     // ---- Check validity of arguments ----
     //
 
-    // are I2S pin assignments valid?
-    uint16_t not_used;
-
-    // is SCK valid?
-    if (mp_obj_is_type(args[ARG_sck].u_obj, &machine_pin_type)) {
-        if (!lookup_gpio(args[ARG_sck].u_obj, SCK, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
-            mp_raise_ValueError(MP_ERROR_TEXT("invalid SCK pin"));
-        }
-    } else {
-        mp_raise_ValueError(MP_ERROR_TEXT("SCK not a Pin type"));
-    }
-
-    // is WS valid?
-    if (mp_obj_is_type(args[ARG_ws].u_obj, &machine_pin_type)) {
-        if (!lookup_gpio(args[ARG_ws].u_obj, WS, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
-            mp_raise_ValueError(MP_ERROR_TEXT("invalid WS pin"));
-        }
-    } else {
-        mp_raise_ValueError(MP_ERROR_TEXT("WS not a Pin type"));
-    }
-
-    // is SD valid?
-    if (mp_obj_is_type(args[ARG_sd].u_obj, &machine_pin_type)) {
-        if (!lookup_gpio(args[ARG_sd].u_obj, SD, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
-            mp_raise_ValueError(MP_ERROR_TEXT("invalid SD pin"));
-        }
-    } else {
-        mp_raise_ValueError(MP_ERROR_TEXT("SD not a Pin type"));
-    }
-
     // is Mode valid?
     uint16_t i2s_mode = args[ARG_mode].u_int;
     if ((i2s_mode != (RX)) &&
         (i2s_mode != (TX))) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid mode"));
+    }
+
+    // are I2S pin assignments valid?
+    uint16_t not_used;
+
+    // is SCK valid?
+    const machine_pin_obj_t *pin_sck = pin_find(args[ARG_sck].u_obj);
+    if (!lookup_gpio(pin_sck, SCK, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid SCK pin"));
+    }
+
+    // is WS valid?
+    const machine_pin_obj_t *pin_ws = pin_find(args[ARG_ws].u_obj);
+    if (!lookup_gpio(pin_ws, WS, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid WS pin"));
+    }
+
+    // is SD valid?
+    const machine_pin_obj_t *pin_sd = pin_find(args[ARG_sd].u_obj);
+    if (!lookup_gpio(pin_sd, SD, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid SD pin"));
     }
 
     // is Bits valid?
@@ -832,9 +823,9 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         mp_raise_ValueError(MP_ERROR_TEXT("invalid ibuf"));
     }
 
-    self->sck = MP_OBJ_TO_PTR(args[ARG_sck].u_obj);
-    self->ws = MP_OBJ_TO_PTR(args[ARG_ws].u_obj);
-    self->sd = MP_OBJ_TO_PTR(args[ARG_sd].u_obj);
+    self->sck = pin_sck;
+    self->ws = pin_ws;
+    self->sd = pin_sd;
     self->mode = i2s_mode;
     self->bits = i2s_bits;
     self->format = i2s_format;
