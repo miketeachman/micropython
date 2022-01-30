@@ -212,8 +212,7 @@ endif
 
 SRC_C += \
 	board_init.c \
-	dma.c \
-	dma_channel.c \
+	dma_manager.c \
 	drivers/bus/softspi.c \
 	drivers/dht/dht.c \
 	eth.c \

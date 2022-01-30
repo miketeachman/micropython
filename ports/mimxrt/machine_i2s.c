@@ -37,8 +37,7 @@
 #include "py/stream.h"
 #include "py/objstr.h"
 #include "modmachine.h"
-#include "dma_channel.h"
-#include "dma.h"
+#include "dma_manager.h"
 
 #include "clock_config.h"
 #include "fsl_iomuxc.h"
