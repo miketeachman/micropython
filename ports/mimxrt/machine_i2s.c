@@ -37,8 +37,7 @@
 #include "py/stream.h"
 #include "py/objstr.h"
 #include "modmachine.h"
-#include "dma_channel.h"
-#include "dma.h"
+#include "dma_manager.h"
 
 #include "clock_config.h"
 #include "fsl_iomuxc.h"
@@ -245,9 +244,21 @@ STATIC const dma_request_source_t i2s_dma_req_src_rx[] = I2S_DMA_REQ_SRC_RX;
 STATIC const gpio_map_t i2s_gpio_map[] = I2S_GPIO_MAP;
 AT_NONCACHEABLE_SECTION_ALIGN(STATIC edma_tcd_t edmaTcd[MICROPY_HW_I2S_NUM], 32);
 
+// called on processor reset
 void machine_i2s_init0() {
     for (uint8_t i = 0; i < MICROPY_HW_I2S_NUM; i++) {
         MP_STATE_PORT(machine_i2s_obj)[i] = NULL;
+    }
+}
+
+// called on soft reboot
+void machine_i2s_deinit_all(void) {
+    for (uint8_t i = 0; i < MICROPY_HW_I2S_NUM; i++) {
+        machine_i2s_obj_t *i2s_obj = MP_STATE_PORT(machine_i2s_obj)[i];
+        if (i2s_obj != NULL) {
+            machine_i2s_deinit(i2s_obj);
+            MP_STATE_PORT(machine_i2s_obj)[i] = NULL;
+        }
     }
 }
 

@@ -30,8 +30,7 @@
 #include "py/mperrno.h"
 #include "extmod/machine_spi.h"
 #include "modmachine.h"
-#include "dma_channel.h"
-#include "dma.h"
+#include "dma_manager.h"
 
 #include "fsl_cache.h"
 #include "fsl_dmamux.h"
