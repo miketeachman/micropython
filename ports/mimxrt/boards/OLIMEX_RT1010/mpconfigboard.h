@@ -68,7 +68,7 @@
 
 #define I2S_GPIO_MAP \
     { \
-        I2S_GPIO(1, MCK, TX, GPIO_08, IOMUXC_GPIO_08_SAI1_MCLK), /* pin D8 */ \
+        I2S_GPIO(1, MCK, RXTX, GPIO_08, IOMUXC_GPIO_08_SAI1_MCLK), /* pin D8 */ \
         I2S_GPIO(1, SCK, RX, GPIO_01, IOMUXC_GPIO_01_SAI1_RX_BCLK), /* pin D1 */ \
         I2S_GPIO(1, WS, RX, GPIO_02, IOMUXC_GPIO_02_SAI1_RX_SYNC), /* pin D2 */ \
         I2S_GPIO(1, SD, RX, GPIO_03, IOMUXC_GPIO_03_SAI1_RX_DATA00), /* pin D3 */ \

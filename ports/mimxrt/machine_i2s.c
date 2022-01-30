@@ -113,7 +113,8 @@ typedef enum {
 
 typedef enum {
     RX,
-    TX
+    TX,
+    RXTX
 } i2s_mode_t;
 
 typedef enum {
@@ -338,7 +339,7 @@ STATIC bool lookup_gpio(const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s
         if ((pin->name == i2s_gpio_map[i].name) &&
             (i2s_gpio_map[i].fn == fn) &&
             (i2s_gpio_map[i].hw_id == hw_id) &&
-            (fn == (i2s_pin_function_t)MCK || (i2s_gpio_map[i].mode == mode))) {
+            (i2s_gpio_map[i].mode == (i2s_mode_t)RXTX || (i2s_gpio_map[i].mode == mode))) {
             *index = i;
             return true;
         }
