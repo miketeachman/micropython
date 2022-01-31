@@ -63,6 +63,7 @@
 #define I2S_CLOCK_MUX { 0, kCLOCK_Sai1Mux, kCLOCK_Sai2Mux }
 #define I2S_CLOCK_PRE_DIV { 0, kCLOCK_Sai1PreDiv, kCLOCK_Sai2PreDiv }
 #define I2S_CLOCK_DIV { 0, kCLOCK_Sai1Div, kCLOCK_Sai2Div }
+#define I2S_IOMUXC_GPR_MODE { 0, kIOMUXC_GPR_SAI1MClkOutputDir, kIOMUXC_GPR_SAI2MClkOutputDir }
 #define I2S_DMA_REQ_SRC_RX { 0, kDmaRequestMuxSai1Rx, kDmaRequestMuxSai2Rx }
 #define I2S_DMA_REQ_SRC_TX { 0, kDmaRequestMuxSai1Tx, kDmaRequestMuxSai2Tx }
 
@@ -87,9 +88,11 @@
         I2S_GPIO(1, WS, TX, GPIO_B1_03, IOMUXC_GPIO_B1_03_SAI1_TX_SYNC), /* pin 37 */ \
         I2S_GPIO(1, SD, TX, GPIO_AD_B1_13, IOMUXC_GPIO_AD_B1_13_SAI1_TX_DATA00), /* pin 39 */ \
         I2S_GPIO(1, SD, TX, GPIO_B1_01, IOMUXC_GPIO_B1_01_SAI1_TX_DATA00), /* pin 7 */ \
+        I2S_GPIO(1, MCK, RXTX, GPIO_AD_B1_09, IOMUXC_GPIO_AD_B1_09_SAI1_MCLK), /* pin 23 */ \
         I2S_GPIO(2, SCK, TX, GPIO_EMC_06, IOMUXC_GPIO_EMC_06_SAI2_TX_BCLK), /* pin 4 */ \
         I2S_GPIO(2, WS, TX, GPIO_EMC_05, IOMUXC_GPIO_EMC_05_SAI2_TX_SYNC), /* pin 3 */ \
-        I2S_GPIO(2, SD, TX, GPIO_EMC_04, IOMUXC_GPIO_EMC_04_SAI2_TX_DATA) /* pin 2 */ \
+        I2S_GPIO(2, SD, TX, GPIO_EMC_04, IOMUXC_GPIO_EMC_04_SAI2_TX_DATA), /* pin 2 */ \
+        I2S_GPIO(2, MCK, TX, GPIO_EMC_07, IOMUXC_GPIO_EMC_07_SAI2_MCLK) /* pin 33 */ \
     }
 
 #define USDHC_DUMMY_PIN NULL, 0
