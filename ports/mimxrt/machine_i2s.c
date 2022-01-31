@@ -239,6 +239,7 @@ STATIC const I2S_Type *i2s_base_ptr[] = I2S_BASE_PTRS;
 STATIC const clock_mux_t i2s_clock_mux[] = I2S_CLOCK_MUX;
 STATIC const clock_div_t i2s_clock_pre_div[] = I2S_CLOCK_PRE_DIV;
 STATIC const clock_div_t i2s_clock_div[] = I2S_CLOCK_DIV;
+STATIC const iomuxc_gpr_mode_t i2s_iomuxc_gpr_mode[] = I2S_IOMUXC_GPR_MODE;
 STATIC const dma_request_source_t i2s_dma_req_src_tx[] = I2S_DMA_REQ_SRC_TX;
 STATIC const dma_request_source_t i2s_dma_req_src_rx[] = I2S_DMA_REQ_SRC_RX;
 STATIC const gpio_map_t i2s_gpio_map[] = I2S_GPIO_MAP;
@@ -671,7 +672,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     if (self->mck && !set_iomux(self->mck, MCK, self->mode, self->i2s_id)) {
         return false;
     } else {
-        IOMUXC_GPR->GPR1 |= IOMUXC_GPR_GPR1_SAI1_MCLK_DIR_MASK;
+        IOMUXC_GPR->GPR1 |= i2s_iomuxc_gpr_mode[self->i2s_id];  // TODO better way ?
     }
 
     self->dma_channel = allocate_dma_channel();
