@@ -819,10 +819,13 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         mp_raise_ValueError(MP_ERROR_TEXT("invalid SD pin"));
     }
 
-    // is MCK valid?
-    const machine_pin_obj_t *pin_mck = pin_find(args[ARG_mck].u_obj);
-    if (!lookup_gpio(pin_mck, MCK, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
-        mp_raise_ValueError(MP_ERROR_TEXT("invalid MCK pin"));
+    // is MCK defined and valid?
+    const machine_pin_obj_t *pin_mck = NULL;
+    if (args[ARG_mck].u_obj != MP_OBJ_NULL) {
+        pin_mck = pin_find(args[ARG_mck].u_obj);
+        if (!lookup_gpio(pin_mck, MCK, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
+            mp_raise_ValueError(MP_ERROR_TEXT("invalid MCK pin"));
+        }
     }
 
     // is Bits valid?
@@ -899,7 +902,7 @@ STATIC mp_obj_t machine_i2s_make_new(const mp_obj_type_t *type, size_t n_pos_arg
     uint8_t i2s_id = mp_obj_get_int(args[0]);
 
     if (i2s_id < 1 || i2s_id > MICROPY_HW_I2S_NUM) {
-        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) doesn't exist"), i2s_id);
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("I2S(%d) does not exist"), i2s_id);
     }
 
     uint8_t i2s_id_zero_base = i2s_id - 1;
