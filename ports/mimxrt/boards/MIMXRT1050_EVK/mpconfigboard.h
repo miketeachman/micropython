@@ -60,6 +60,7 @@
 #define I2S_CLOCK_DIV { 0, kCLOCK_Sai1Div, kCLOCK_Sai2Div }
 #define I2S_DMA_REQ_SRC_RX { 0, kDmaRequestMuxSai1Rx, kDmaRequestMuxSai2Rx }
 #define I2S_DMA_REQ_SRC_TX { 0, kDmaRequestMuxSai1Tx, kDmaRequestMuxSai2Tx }
+#define I2S_RX_SYNC_MODE  (1)
 
 #define I2S_GPIO(_hwid, _fn, _mode, _pin, _iomux) \
     { \
