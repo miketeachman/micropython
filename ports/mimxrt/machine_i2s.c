@@ -700,7 +700,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     if (self->mode == TX) {
         SAI_TxSetConfig(self->i2s_inst, &saiConfig);
     } else { // RX
-        #ifdef I2S_RX_SYNC_MODE
+        #ifdef I2S_WM8960_RX_MODE
         saiConfig.syncMode = kSAI_ModeSync;
         #endif
         SAI_RxSetConfig(self->i2s_inst, &saiConfig);
