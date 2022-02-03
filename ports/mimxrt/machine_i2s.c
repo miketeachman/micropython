@@ -364,7 +364,7 @@ STATIC bool set_iomux(const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s_m
     if (lookup_gpio(pin, fn, mode, hw_id, &mapping_index)) {
         iomux_table_t iom = i2s_gpio_map[mapping_index].iomux;
         IOMUXC_SetPinMux(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 1U);
-        IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 0x10B0u);
+        IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 0x1050u);
         return true;
     } else {
         return false;
@@ -700,7 +700,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     if (self->mode == TX) {
         SAI_TxSetConfig(self->i2s_inst, &saiConfig);
     } else { // RX
-        #ifdef I2S_RX_SYNC_MODE
+        #ifdef I2S_WM8960_RX_MODE
         saiConfig.syncMode = kSAI_ModeSync;
         #endif
         SAI_RxSetConfig(self->i2s_inst, &saiConfig);
@@ -781,7 +781,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         { MP_QSTR_format,   MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_rate,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_ibuf,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_mck,      MP_ARG_KW_ONLY | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_mck,      MP_ARG_KW_ONLY | MP_ARG_OBJ,   {.u_obj = mp_const_none} },
     };
 
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -821,7 +821,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     // is MCK defined and valid?
     const machine_pin_obj_t *pin_mck = NULL;
-    if (args[ARG_mck].u_obj != MP_OBJ_NULL) {
+    if (args[ARG_mck].u_obj != mp_const_none) {
         pin_mck = pin_find(args[ARG_mck].u_obj);
         if (!lookup_gpio(pin_mck, MCK, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
             mp_raise_ValueError(MP_ERROR_TEXT("invalid MCK pin"));
