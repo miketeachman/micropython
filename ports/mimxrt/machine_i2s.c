@@ -364,7 +364,7 @@ STATIC bool set_iomux(const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s_m
     if (lookup_gpio(pin, fn, mode, hw_id, &mapping_index)) {
         iomux_table_t iom = i2s_gpio_map[mapping_index].iomux;
         IOMUXC_SetPinMux(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 1U);
-        IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 0x10B0u);
+        IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 0x1050u);
         return true;
     } else {
         return false;
