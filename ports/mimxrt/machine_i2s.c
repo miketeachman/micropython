@@ -4,6 +4,7 @@
  * The MIT License (MIT)
  *
  * Copyright (c) 2022 Mike Teachman
+ * Copyright (c) 2022 Robert Hammelrath
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -362,9 +363,13 @@ STATIC bool lookup_gpio(const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s
 STATIC bool set_iomux(const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s_mode_t mode, uint8_t hw_id) {
     uint16_t mapping_index;
     if (lookup_gpio(pin, fn, mode, hw_id, &mapping_index)) {
+        uint32_t pin_config = 0;
+        pin_config |= (IOMUXC_SW_PAD_CTL_PAD_PKE(0b1) |
+            IOMUXC_SW_PAD_CTL_PAD_SPEED(0b01) |
+            IOMUXC_SW_PAD_CTL_PAD_DSE(0b010));
         iomux_table_t iom = i2s_gpio_map[mapping_index].iomux;
         IOMUXC_SetPinMux(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 1U);
-        IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 0x1050u);
+        IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, pin_config);
         return true;
     } else {
         return false;
@@ -672,7 +677,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     if (self->mck && !set_iomux(self->mck, MCK, self->mode, self->i2s_id)) {
         return false;
     } else {
-        IOMUXC_GPR->GPR1 |= i2s_iomuxc_gpr_mode[self->i2s_id];  // TODO better way ?
+        IOMUXC_EnableMode(IOMUXC_GPR, i2s_iomuxc_gpr_mode[self->i2s_id], true);
     }
 
     self->dma_channel = allocate_dma_channel();
