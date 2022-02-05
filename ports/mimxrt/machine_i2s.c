@@ -114,7 +114,6 @@ typedef enum {
 typedef enum {
     RX,
     TX,
-    RXTX
 } i2s_mode_t;
 
 typedef enum {
@@ -347,12 +346,11 @@ STATIC int8_t get_dma_bits(uint16_t mode, int8_t bits) {
     }
 }
 
-STATIC bool lookup_gpio(const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s_mode_t mode, uint8_t hw_id, uint16_t *index) {
+STATIC bool lookup_gpio(const machine_pin_obj_t *pin, i2s_pin_function_t fn, uint8_t hw_id, uint16_t *index) {
     for (uint16_t i = 0; i < sizeof(i2s_gpio_map) / sizeof(gpio_map_t); i++) {
         if ((pin->name == i2s_gpio_map[i].name) &&
             (i2s_gpio_map[i].fn == fn) &&
-            (i2s_gpio_map[i].hw_id == hw_id) &&
-            (i2s_gpio_map[i].mode == (i2s_mode_t)RXTX || (i2s_gpio_map[i].mode == mode))) {
+            (i2s_gpio_map[i].hw_id == hw_id)) {
             *index = i;
             return true;
         }
@@ -360,9 +358,9 @@ STATIC bool lookup_gpio(const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s
     return false;
 }
 
-STATIC bool set_iomux(const machine_pin_obj_t *pin, i2s_pin_function_t fn, i2s_mode_t mode, uint8_t hw_id) {
+STATIC bool set_iomux(const machine_pin_obj_t *pin, i2s_pin_function_t fn, uint8_t hw_id) {
     uint16_t mapping_index;
-    if (lookup_gpio(pin, fn, mode, hw_id, &mapping_index)) {
+    if (lookup_gpio(pin, fn, hw_id, &mapping_index)) {
         uint32_t pin_config = 0;
         pin_config |= (IOMUXC_SW_PAD_CTL_PAD_PKE(0b1) |
             IOMUXC_SW_PAD_CTL_PAD_SPEED(0b01) |
@@ -662,21 +660,22 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     CLOCK_SetDiv(i2s_clock_pre_div[self->i2s_id], SAI_CLOCK_SOURCE_PRE_DIVIDER);
     CLOCK_SetDiv(i2s_clock_div[self->i2s_id], SAI_CLOCK_SOURCE_DIVIDER);
 
-    if (!set_iomux(self->sck, SCK, self->mode, self->i2s_id)) {
+    if (!set_iomux(self->sck, SCK, self->i2s_id)) {
         return false;
     }
 
-    if (!set_iomux(self->ws, WS, self->mode, self->i2s_id)) {
+    if (!set_iomux(self->ws, WS, self->i2s_id)) {
         return false;
     }
 
-    if (!set_iomux(self->sd, SD, self->mode, self->i2s_id)) {
+    if (!set_iomux(self->sd, SD, self->i2s_id)) {
         return false;
     }
 
-    if (self->mck && !set_iomux(self->mck, MCK, self->mode, self->i2s_id)) {
-        return false;
-    } else {
+    if (self->mck) {
+        if (!set_iomux(self->mck, MCK, self->i2s_id)) {
+            return false;
+        }
         IOMUXC_EnableMode(IOMUXC_GPR, i2s_iomuxc_gpr_mode[self->i2s_id], true);
     }
 
@@ -699,29 +698,44 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
 
     sai_transceiver_t saiConfig;
     SAI_GetClassicI2SConfig(&saiConfig, get_dma_bits(self->mode, self->bits), kSAI_Stereo, kSAI_Channel0Mask);
-    saiConfig.syncMode = kSAI_ModeAsync;
     saiConfig.masterSlave = kSAI_Master;
 
-    if (self->mode == TX) {
+    uint16_t sck_index;
+    lookup_gpio(self->sck, SCK, self->i2s_id, &sck_index);
+
+    if ((self->mode == TX) && (i2s_gpio_map[sck_index].mode == TX)) {
+        saiConfig.syncMode = kSAI_ModeAsync;
         SAI_TxSetConfig(self->i2s_inst, &saiConfig);
-    } else { // RX
-        #ifdef I2S_WM8960_RX_MODE
-        saiConfig.syncMode = kSAI_ModeSync;
-        #endif
+    } else if ((self->mode == RX) && (i2s_gpio_map[sck_index].mode == RX)) {
+        saiConfig.syncMode = kSAI_ModeAsync;
         SAI_RxSetConfig(self->i2s_inst, &saiConfig);
+    } else if ((self->mode == TX) && (i2s_gpio_map[sck_index].mode == RX)) {
+        saiConfig.syncMode = kSAI_ModeAsync;
+        SAI_RxSetConfig(self->i2s_inst, &saiConfig);
+        saiConfig.bitClock.bclkSrcSwap = true;  // TODO does not seem to make a difference
+        saiConfig.syncMode = kSAI_ModeSync;
+        SAI_TxSetConfig(self->i2s_inst, &saiConfig);
+    } else if ((self->mode == RX) && (i2s_gpio_map[sck_index].mode == TX)) {
+
+        // TODO untested
+
+        saiConfig.syncMode = kSAI_ModeAsync;
+        SAI_TxSetConfig(self->i2s_inst, &saiConfig);
+        saiConfig.bitClock.bclkSrcSwap = true;
+        saiConfig.syncMode = kSAI_ModeSync;
+        SAI_RxSetConfig(self->i2s_inst, &saiConfig);
+    } else {
+        return false; // should never happen
     }
 
     uint32_t clock_freq =
         (CLOCK_GetFreq(kCLOCK_AudioPllClk) / (SAI_CLOCK_SOURCE_DIVIDER + 1U) /
             (SAI_CLOCK_SOURCE_PRE_DIVIDER + 1U));
 
-    if (self->mode == TX) {
-        SAI_TxSetBitClockRate(self->i2s_inst, clock_freq, self->rate, get_dma_bits(self->mode, self->bits),
-            SAI_NUM_AUDIO_CHANNELS);
-    } else { // RX
-        SAI_RxSetBitClockRate(self->i2s_inst, clock_freq, self->rate, get_dma_bits(self->mode, self->bits),
-            SAI_NUM_AUDIO_CHANNELS);
-    }
+    SAI_TxSetBitClockRate(self->i2s_inst, clock_freq, self->rate, get_dma_bits(self->mode, self->bits),
+        SAI_NUM_AUDIO_CHANNELS);
+    SAI_RxSetBitClockRate(self->i2s_inst, clock_freq, self->rate, get_dma_bits(self->mode, self->bits),
+        SAI_NUM_AUDIO_CHANNELS);
 
     edma_transfer_config_t transferConfig;
     uint8_t bytes_per_sample = get_dma_bits(self->mode, self->bits) / 8;
@@ -808,19 +822,27 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     // is SCK valid?
     const machine_pin_obj_t *pin_sck = pin_find(args[ARG_sck].u_obj);
-    if (!lookup_gpio(pin_sck, SCK, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
+    if (!lookup_gpio(pin_sck, SCK, self->i2s_id, &not_used)) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid SCK pin"));
     }
 
     // is WS valid?
     const machine_pin_obj_t *pin_ws = pin_find(args[ARG_ws].u_obj);
-    if (!lookup_gpio(pin_ws, WS, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
+    if (!lookup_gpio(pin_ws, WS, self->i2s_id, &not_used)) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid WS pin"));
     }
 
     // is SD valid?
     const machine_pin_obj_t *pin_sd = pin_find(args[ARG_sd].u_obj);
-    if (!lookup_gpio(pin_sd, SD, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
+    uint16_t mapping_index;
+    bool invalid_sd = true;
+    if (lookup_gpio(pin_sd, SD, self->i2s_id, &mapping_index)) {
+         if (i2s_mode == i2s_gpio_map[mapping_index].mode) {
+             invalid_sd = false;
+        }
+    }
+
+    if (invalid_sd) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid SD pin"));
     }
 
@@ -828,7 +850,7 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     const machine_pin_obj_t *pin_mck = NULL;
     if (args[ARG_mck].u_obj != mp_const_none) {
         pin_mck = pin_find(args[ARG_mck].u_obj);
-        if (!lookup_gpio(pin_mck, MCK, args[ARG_mode].u_int, self->i2s_id, &not_used)) {
+        if (!lookup_gpio(pin_mck, MCK, self->i2s_id, &not_used)) {
             mp_raise_ValueError(MP_ERROR_TEXT("invalid MCK pin"));
         }
     }
