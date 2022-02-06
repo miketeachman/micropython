@@ -364,13 +364,10 @@ STATIC bool lookup_gpio(const machine_pin_obj_t *pin, i2s_pin_function_t fn, uin
 STATIC bool set_iomux(const machine_pin_obj_t *pin, i2s_pin_function_t fn, uint8_t hw_id) {
     uint16_t mapping_index;
     if (lookup_gpio(pin, fn, hw_id, &mapping_index)) {
-        uint32_t pin_config = 0;
-        pin_config |= (IOMUXC_SW_PAD_CTL_PAD_PKE(0b1) |
-            IOMUXC_SW_PAD_CTL_PAD_SPEED(0b01) |
-            IOMUXC_SW_PAD_CTL_PAD_DSE(0b010));
         iomux_table_t iom = i2s_gpio_map[mapping_index].iomux;
         IOMUXC_SetPinMux(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, 1U);
-        IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister, pin_config);
+        IOMUXC_SetPinConfig(iom.muxRegister, iom.muxMode, iom.inputRegister, iom.inputDaisy, iom.configRegister,
+            pin_generate_config(PIN_PULL_DISABLED, PIN_MODE_OUT, 2, iom.configRegister));
         return true;
     } else {
         return false;
@@ -719,12 +716,8 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
         saiConfig.syncMode = kSAI_ModeSync;
         SAI_TxSetConfig(self->i2s_inst, &saiConfig);
     } else if ((self->mode == RX) && (i2s_gpio_map[sck_index].mode == TX)) {
-
-        // TODO untested
-
         saiConfig.syncMode = kSAI_ModeAsync;
         SAI_TxSetConfig(self->i2s_inst, &saiConfig);
-        saiConfig.bitClock.bclkSrcSwap = true;
         saiConfig.syncMode = kSAI_ModeSync;
         SAI_RxSetConfig(self->i2s_inst, &saiConfig);
     } else {
