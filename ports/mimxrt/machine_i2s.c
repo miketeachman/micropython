@@ -203,9 +203,11 @@ STATIC const int8_t i2s_frame_map[NUM_I2S_USER_FORMATS][I2S_RX_FRAME_SIZE_IN_BYT
     { 0,  1,  2,  3,  4,  5,  6,  7 },  // Stereo, 32-bits
 };
 
-// 2 PLL configurations:
+// 2 PLL configurations
+// PLL output frequency = 24MHz * (.loopDivider + .numerator/.denominator)
 
 // Configuration 1: for sampling frequencies [Hz]:  8000, 12000, 16000, 24000, 32000, 48000
+// Clock frequency = 786,432,480 Hz
 STATIC const clock_audio_pll_config_t audioPllConfig_8000_48000 = {
     .loopDivider = 32,          // PLL loop divider. Valid range for DIV_SELECT divider value: 27~54
     .postDivider = 1,           // Divider after the PLL, should only be 1, 2, 4, 8, 16
@@ -215,6 +217,7 @@ STATIC const clock_audio_pll_config_t audioPllConfig_8000_48000 = {
 };
 
 // Configuration 2: for sampling frequencies [Hz]:  11025, 22050, 44100
+// Clock frequency = 722,534,880
 STATIC const clock_audio_pll_config_t audioPllConfig_11025_44100 = {
     .loopDivider = 30,          // PLL loop divider. Valid range for DIV_SELECT divider value: 27~54
     .postDivider = 1,           // Divider after the PLL, should only be 1, 2, 4, 8, 16
@@ -984,6 +987,8 @@ STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
             SAI_RxEnable(self->i2s_inst, false);
             SAI_RxReset(self->i2s_inst);
         }
+
+        // TODO disable MCK
 
         SAI_Deinit(self->i2s_inst);
         free_dma_channel(self->dma_channel);
