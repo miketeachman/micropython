@@ -99,8 +99,6 @@
 #define NUM_I2S_USER_FORMATS (4)
 #define I2S_RX_FRAME_SIZE_IN_BYTES (8)
 #define AUDIO_PLL_CLOCK (2U)
-#define SAI_CLOCK_SOURCE_PRE_DIVIDER (0U)
-#define SAI_CLOCK_SOURCE_DIVIDER (63U)
 #define SAI_CHANNEL_0 (0)
 #define SAI_NUM_AUDIO_CHANNELS (2U)
 
@@ -186,10 +184,12 @@ typedef struct _gpio_map_t {
     iomux_table_t iomux;
 } gpio_map_t;
 
-typedef struct _i2s_pll_rate_t {
+typedef struct _i2s_clock_config_t {
     sai_sample_rate_t rate;
     const clock_audio_pll_config_t *pll_config;
-} i2s_pll_rate_t;
+    uint32_t clock_pre_divider;
+    uint32_t clock_divider;
+} i2s_clock_config_t;
 
 STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in);
 
@@ -226,16 +226,16 @@ STATIC const clock_audio_pll_config_t audioPllConfig_11025_44100 = {
     .src = kCLOCK_PllClkSrc24M  // Pll clock source
 };
 
-STATIC const i2s_pll_rate_t pll_rate_map[] = {
-    {kSAI_SampleRate8KHz, &audioPllConfig_8000_48000},
-    {kSAI_SampleRate11025Hz, &audioPllConfig_11025_44100},
-    {kSAI_SampleRate12KHz, &audioPllConfig_8000_48000},
-    {kSAI_SampleRate16KHz, &audioPllConfig_8000_48000},
-    {kSAI_SampleRate22050Hz, &audioPllConfig_11025_44100},
-    {kSAI_SampleRate24KHz, &audioPllConfig_8000_48000},
-    {kSAI_SampleRate32KHz, &audioPllConfig_8000_48000},
-    {kSAI_SampleRate44100Hz, &audioPllConfig_11025_44100},
-    {kSAI_SampleRate48KHz, &audioPllConfig_8000_48000}
+STATIC const i2s_clock_config_t clock_config_map[] = {
+    {kSAI_SampleRate8KHz, &audioPllConfig_8000_48000, 5, 63},
+    {kSAI_SampleRate11025Hz, &audioPllConfig_11025_44100, 3, 63},
+    {kSAI_SampleRate12KHz, &audioPllConfig_8000_48000, 3, 63},
+    {kSAI_SampleRate16KHz, &audioPllConfig_8000_48000, 2, 63},
+    {kSAI_SampleRate22050Hz, &audioPllConfig_11025_44100, 1, 63},
+    {kSAI_SampleRate24KHz, &audioPllConfig_8000_48000, 1, 63},
+    {kSAI_SampleRate32KHz, &audioPllConfig_8000_48000, 1, 47},
+    {kSAI_SampleRate44100Hz, &audioPllConfig_11025_44100, 0, 63},
+    {kSAI_SampleRate48KHz, &audioPllConfig_8000_48000, 0, 63}
 };
 
 STATIC const I2S_Type *i2s_base_ptr[] = I2S_BASE_PTRS;
@@ -375,8 +375,8 @@ STATIC bool set_iomux(const machine_pin_obj_t *pin, i2s_pin_function_t fn, uint8
 }
 
 STATIC bool is_rate_supported(int32_t rate) {
-    for (uint16_t i = 0; i < sizeof(pll_rate_map) / sizeof(i2s_pll_rate_t); i++) {
-        if (pll_rate_map[i].rate == rate) {
+    for (uint16_t i = 0; i < sizeof(clock_config_map) / sizeof(i2s_clock_config_t); i++) {
+        if (clock_config_map[i].rate == rate) {
             return true;
         }
     }
@@ -384,12 +384,30 @@ STATIC bool is_rate_supported(int32_t rate) {
 }
 
 STATIC const clock_audio_pll_config_t *get_pll_config(int32_t rate) {
-    for (uint16_t i = 0; i < sizeof(pll_rate_map) / sizeof(i2s_pll_rate_t); i++) {
-        if (pll_rate_map[i].rate == rate) {
-            return pll_rate_map[i].pll_config;
+    for (uint16_t i = 0; i < sizeof(clock_config_map) / sizeof(i2s_clock_config_t); i++) {
+        if (clock_config_map[i].rate == rate) {
+            return clock_config_map[i].pll_config;
         }
     }
-    return NULL;
+    return 0;
+}
+
+STATIC const uint32_t get_clock_pre_divider(int32_t rate) {
+    for (uint16_t i = 0; i < sizeof(clock_config_map) / sizeof(i2s_clock_config_t); i++) {
+        if (clock_config_map[i].rate == rate) {
+            return clock_config_map[i].clock_pre_divider;
+        }
+    }
+    return 0;
+}
+
+STATIC const uint32_t get_clock_divider(int32_t rate) {
+    for (uint16_t i = 0; i < sizeof(clock_config_map) / sizeof(i2s_clock_config_t); i++) {
+        if (clock_config_map[i].rate == rate) {
+            return clock_config_map[i].clock_divider;
+        }
+    }
+    return 0;
 }
 
 STATIC uint32_t fill_appbuf_from_ringbuf(machine_i2s_obj_t *self, mp_buffer_info_t *appbuf) {
@@ -657,8 +675,8 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
 
     CLOCK_InitAudioPll(get_pll_config(self->rate));
     CLOCK_SetMux(i2s_clock_mux[self->i2s_id], AUDIO_PLL_CLOCK);
-    CLOCK_SetDiv(i2s_clock_pre_div[self->i2s_id], SAI_CLOCK_SOURCE_PRE_DIVIDER);
-    CLOCK_SetDiv(i2s_clock_div[self->i2s_id], SAI_CLOCK_SOURCE_DIVIDER);
+    CLOCK_SetDiv(i2s_clock_pre_div[self->i2s_id], get_clock_pre_divider(self->rate));
+    CLOCK_SetDiv(i2s_clock_div[self->i2s_id], get_clock_divider(self->rate));
 
     if (!set_iomux(self->sck, SCK, self->i2s_id)) {
         return false;
@@ -725,8 +743,8 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     }
 
     uint32_t clock_freq =
-        (CLOCK_GetFreq(kCLOCK_AudioPllClk) / (SAI_CLOCK_SOURCE_DIVIDER + 1U) /
-            (SAI_CLOCK_SOURCE_PRE_DIVIDER + 1U));
+        (CLOCK_GetFreq(kCLOCK_AudioPllClk) / (get_clock_divider(self->rate) + 1U) /
+            (get_clock_pre_divider(self->rate) + 1U));
 
     SAI_TxSetBitClockRate(self->i2s_inst, clock_freq, self->rate, get_dma_bits(self->mode, self->bits),
         SAI_NUM_AUDIO_CHANNELS);
