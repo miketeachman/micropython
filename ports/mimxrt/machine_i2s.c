@@ -83,6 +83,7 @@
 // - the DMA ping-pong buffer needs to be aligned to a cache line size of 32 bytes.  32 byte
 //   alignment is needed to use the routines that clean and invalidate D-Cache which work on a
 //   32 byte address boundary.
+// - master clock frequency is sampling frequency * 256
 
 // DMA ping-pong buffer size was empirically determined.  It is a tradeoff between:
 // 1. memory use (smaller buffer size desirable to reduce memory footprint)
@@ -350,7 +351,7 @@ STATIC int8_t get_dma_bits(uint16_t mode, int8_t bits) {
 }
 
 STATIC bool lookup_gpio(const machine_pin_obj_t *pin, i2s_pin_function_t fn, uint8_t hw_id, uint16_t *index) {
-    for (uint16_t i = 0; i < sizeof(i2s_gpio_map) / sizeof(gpio_map_t); i++) {
+    for (uint16_t i = 0; i < ARRAY_SIZE(i2s_gpio_map); i++) {
         if ((pin->name == i2s_gpio_map[i].name) &&
             (i2s_gpio_map[i].fn == fn) &&
             (i2s_gpio_map[i].hw_id == hw_id)) {
@@ -375,7 +376,7 @@ STATIC bool set_iomux(const machine_pin_obj_t *pin, i2s_pin_function_t fn, uint8
 }
 
 STATIC bool is_rate_supported(int32_t rate) {
-    for (uint16_t i = 0; i < sizeof(clock_config_map) / sizeof(i2s_clock_config_t); i++) {
+    for (uint16_t i = 0; i < ARRAY_SIZE(clock_config_map); i++) {
         if (clock_config_map[i].rate == rate) {
             return true;
         }
@@ -384,7 +385,7 @@ STATIC bool is_rate_supported(int32_t rate) {
 }
 
 STATIC const clock_audio_pll_config_t *get_pll_config(int32_t rate) {
-    for (uint16_t i = 0; i < sizeof(clock_config_map) / sizeof(i2s_clock_config_t); i++) {
+    for (uint16_t i = 0; i < ARRAY_SIZE(clock_config_map); i++) {
         if (clock_config_map[i].rate == rate) {
             return clock_config_map[i].pll_config;
         }
@@ -393,7 +394,7 @@ STATIC const clock_audio_pll_config_t *get_pll_config(int32_t rate) {
 }
 
 STATIC const uint32_t get_clock_pre_divider(int32_t rate) {
-    for (uint16_t i = 0; i < sizeof(clock_config_map) / sizeof(i2s_clock_config_t); i++) {
+    for (uint16_t i = 0; i < ARRAY_SIZE(clock_config_map); i++) {
         if (clock_config_map[i].rate == rate) {
             return clock_config_map[i].clock_pre_divider;
         }
@@ -402,7 +403,7 @@ STATIC const uint32_t get_clock_pre_divider(int32_t rate) {
 }
 
 STATIC const uint32_t get_clock_divider(int32_t rate) {
-    for (uint16_t i = 0; i < sizeof(clock_config_map) / sizeof(i2s_clock_config_t); i++) {
+    for (uint16_t i = 0; i < ARRAY_SIZE(clock_config_map); i++) {
         if (clock_config_map[i].rate == rate) {
             return clock_config_map[i].clock_divider;
         }
@@ -730,7 +731,7 @@ STATIC bool i2s_init(machine_i2s_obj_t *self) {
     } else if ((self->mode == TX) && (i2s_gpio_map[sck_index].mode == RX)) {
         saiConfig.syncMode = kSAI_ModeAsync;
         SAI_RxSetConfig(self->i2s_inst, &saiConfig);
-        saiConfig.bitClock.bclkSrcSwap = true;  // TODO does not seem to make a difference
+        saiConfig.bitClock.bclkSrcSwap = true;
         saiConfig.syncMode = kSAI_ModeSync;
         SAI_TxSetConfig(self->i2s_inst, &saiConfig);
     } else if ((self->mode == RX) && (i2s_gpio_map[sck_index].mode == TX)) {
@@ -797,24 +798,24 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
         ARG_sck,
         ARG_ws,
         ARG_sd,
+        ARG_mck,
         ARG_mode,
         ARG_bits,
         ARG_format,
         ARG_rate,
         ARG_ibuf,
-        ARG_mck,
     };
 
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_sck,      MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
         { MP_QSTR_ws,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
         { MP_QSTR_sd,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_mck,      MP_ARG_KW_ONLY | MP_ARG_OBJ,   {.u_obj = mp_const_none} },
         { MP_QSTR_mode,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_bits,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_format,   MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_rate,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_ibuf,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
-        { MP_QSTR_mck,      MP_ARG_KW_ONLY | MP_ARG_OBJ,   {.u_obj = mp_const_none} },
     };
 
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -925,6 +926,7 @@ STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
         "sck="MP_HAL_PIN_FMT ",\n"
         "ws="MP_HAL_PIN_FMT ",\n"
         "sd="MP_HAL_PIN_FMT ",\n"
+        "mck="MP_HAL_PIN_FMT ",\n"
         "mode=%u,\n"
         "bits=%u, format=%u,\n"
         "rate=%d, ibuf=%d)",
@@ -932,6 +934,7 @@ STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
         mp_hal_pin_name(self->sck),
         mp_hal_pin_name(self->ws),
         mp_hal_pin_name(self->sd),
+        mp_hal_pin_name(self->mck),
         self->mode,
         self->bits, self->format,
         self->rate, self->ibuf
@@ -998,8 +1001,6 @@ STATIC mp_obj_t machine_i2s_deinit(mp_obj_t self_in) {
             SAI_RxEnable(self->i2s_inst, false);
             SAI_RxReset(self->i2s_inst);
         }
-
-        // TODO disable MCK
 
         SAI_Deinit(self->i2s_inst);
         free_dma_channel(self->dma_channel);
